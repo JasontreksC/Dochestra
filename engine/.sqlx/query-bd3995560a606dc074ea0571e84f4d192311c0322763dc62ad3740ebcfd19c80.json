@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT original_name, stored_path FROM bundle_files WHERE bundle_id = $1 ORDER BY position",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "original_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "stored_path",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "bd3995560a606dc074ea0571e84f4d192311c0322763dc62ad3740ebcfd19c80"
+}

@@ -1,0 +1,38 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT b.id, b.name, COUNT(f.id) AS \"file_count!\", b.created_at\n           FROM bundles b LEFT JOIN bundle_files f ON f.bundle_id = b.id\n           GROUP BY b.id\n           ORDER BY b.created_at DESC, b.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "file_count!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      false
+    ]
+  },
+  "hash": "f4fcf5f494deea8fea5f89832b64f30398dccf8b68ceb77f77ccc8017ed2ed14"
+}

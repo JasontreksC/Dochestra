@@ -1,0 +1,13 @@
+# secrets / local config
+.env
+
+# build outputs & dependencies
+**/target/
+**/node_modules/
+**/dist/
+**/.venv/
+**/__pycache__/
+*.pyc
+**/.pytest_cache/
+**/.ruff_cache/
+extractor/.models/

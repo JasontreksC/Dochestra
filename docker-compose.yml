@@ -1,0 +1,93 @@
+name: dochestra
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required (see .env.example)}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required (see .env.example)}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required (see .env.example)}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  extractor:
+    build: ./extractor
+    restart: unless-stopped
+    environment:
+      DATA_DIR: /data
+      EXTRACTOR_OCR: ${EXTRACTOR_OCR:-false}
+    volumes:
+      - data:/data
+    mem_limit: 4g
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 600s
+
+  engine:
+    build: ./engine
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required (see .env.example)}
+      EXTRACTOR_URL: ${EXTRACTOR_URL:-http://extractor:8000}
+      DATA_DIR: /data
+      ENGINE_BIND: 0.0.0.0:8080
+      RUST_LOG: ${RUST_LOG:-info}
+      EXTRACTOR_HEALTH_REQUIRED: "true"
+      EXTRACTOR_HEALTH_TIMEOUT_SECS: ${EXTRACTOR_HEALTH_TIMEOUT_SECS:-600}
+      # [D-6] external provider keys (pass-through, unused until M3)
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_EFFORT: ${LLM_EFFORT:-}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+      TTS_API_KEY: ${TTS_API_KEY:-}
+      TTS_BASE_URL: ${TTS_BASE_URL:-}
+      TTS_MODEL: ${TTS_MODEL:-}
+      TTS_VOICE: ${TTS_VOICE:-}
+    volumes:
+      - data:/data
+    depends_on:
+      db:
+        condition: service_healthy
+      extractor:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
+
+  web:
+    build: ./web
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-80}:80"
+    depends_on:
+      engine:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  data:
+  pgdata:

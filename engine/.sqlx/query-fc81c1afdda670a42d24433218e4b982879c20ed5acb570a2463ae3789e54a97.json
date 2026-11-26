@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT outputs AS \"outputs?: Json<NodeOutputs>\" FROM node_runs WHERE run_id = $1 AND node_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "outputs?: Json<NodeOutputs>",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "fc81c1afdda670a42d24433218e4b982879c20ed5acb570a2463ae3789e54a97"
+}

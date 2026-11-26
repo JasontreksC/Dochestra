@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE node_runs SET status = 'skipped', finished_at = now()\n         WHERE status = 'pending' AND run_id IN (SELECT id FROM runs WHERE status = 'running')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "f3ed8f64d5c75f7ea62cc94b8e963d4732ef365c5fc58785500105879d02d906"
+}

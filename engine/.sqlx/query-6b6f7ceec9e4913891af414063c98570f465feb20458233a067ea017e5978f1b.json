@@ -1,0 +1,51 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO bundle_files (id, bundle_id, original_name, stored_path, size_bytes, position)\n             VALUES ($1, $2, $3, $4, $5, $6)\n             RETURNING id, original_name, size_bytes, position, created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "original_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "size_bytes",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "position",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Int8",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "6b6f7ceec9e4913891af414063c98570f465feb20458233a067ea017e5978f1b"
+}

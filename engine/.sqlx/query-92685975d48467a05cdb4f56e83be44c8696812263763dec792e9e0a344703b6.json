@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM bundle_files WHERE bundle_id = $1 AND id = $2 RETURNING stored_path",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "stored_path",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "92685975d48467a05cdb4f56e83be44c8696812263763dec792e9e0a344703b6"
+}
