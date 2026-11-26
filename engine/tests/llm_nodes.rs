@@ -821,7 +821,35 @@ async fn summary_sends_images_before_the_document_in_order() {
     for (i, block) in mock.image_blocks(0).iter().enumerate() {
         assert_eq!(image_b64(block), STANDARD.encode([0xff, 0xd8, i as u8]));
     }
-    assert!(mock.user_text(0).contains("첨부된 이미지 3개"));
+    let text = mock.user_text(0);
+    assert!(text.contains("첨부된 이미지 3개"));
+    // The model is told how the images map onto the document.
+    assert!(text.contains("<!-- image -->") && text.contains("순서대로"));
+}
+
+#[tokio::test]
+async fn summary_prompt_demands_korean_brevity_and_no_invented_numbers() {
+    let env = Env::new(NodeKind::Summary);
+    let mock = spawn_llm(vec![ok("요약")]).await;
+    summary::run(
+        &client(&mock.url, Some(KEY)),
+        &env.ctx,
+        &summary_inputs(&env, None),
+    )
+    .await
+    .unwrap();
+    let system = mock.body(0)["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(system.contains("반드시 한국어") && system.contains("hours"));
+    let text = mock.user_text(0);
+    assert!(text.contains("## 핵심 요점"));
+    assert!(text.contains("원문보다 분명히 짧아야"), "{text}");
+    assert!(text.contains("문서에 없는 수치는 쓰지 않습니다"));
+    // Every section keeps its own heading, and the key points are not repeated per section.
+    assert!(text.contains("소제목을 따로 둡니다") && text.contains("되풀이하지 말고"));
+    assert!(!text.contains("첨부된 이미지"));
 }
 
 #[tokio::test]

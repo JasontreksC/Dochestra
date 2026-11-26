@@ -20,7 +20,7 @@ Rules:
 links, emphasis and line breaks.
 - Do not modify fenced code blocks, inline code, URLs, or `<!-- image -->` placeholders.
 - Do not add a preface, explanation, notes or a summary; do not wrap the output in a code block.
-- Follow the glossary exactly when it is given.";
+- Keep numbers as Arabic numerals; do not spell them out in words.\n- Follow the glossary exactly when it is given.";
 
 /// Translation settings read from the `settings` JSON input.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -464,6 +464,7 @@ mod tests {
         assert!(prompt.contains("- node => 노드"));
         assert!(prompt.contains("Keep product names."));
         assert!(prompt.contains("<!-- image -->"));
+        assert!(prompt.contains("Arabic numerals"));
         let minimal = build_system_prompt(&parse_settings(r#"{"targetLanguage":"ko"}"#).unwrap());
         assert!(!minimal.contains("Glossary") && !minimal.contains("Source language"));
     }

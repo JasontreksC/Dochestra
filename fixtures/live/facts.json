@@ -1,0 +1,7 @@
+{
+  "_comment": "Facts a good summary should keep; each entry lists alternative spellings (English / Korean). Used by scripts/live/summary_check.py.",
+  "report_en": [["482"], ["Min-jun Park", "박민준"], ["31"], ["Asia-Pacific", "아시아"], ["Busan", "부산"], ["2012"], ["540"], ["Taiwan", "대만"], ["Rotterdam", "로테르담"], ["Gimhae", "김해"]],
+  "report_ko": [["482", "4억 8,200만", "4억 8200만"], ["박민준"], ["31"], ["아시아"], ["부산"], ["2012"], ["대만"], ["로테르담"], ["김해"], ["62"]],
+  "handbook_en": [["Aurora Robotics"], ["0.3"], ["30분", "30 minutes"], ["20%", "20 percent", "20퍼센트"], ["24시간", "24 hours"]],
+  "gallery_en": [["Aurora Robotics"], ["28"], ["Gimhae", "김해"]]
+}

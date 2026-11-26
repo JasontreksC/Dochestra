@@ -72,12 +72,39 @@ live_node_translate() {
   return "$rc"
 }
 
+# live_summary_case <case> <doc-key> <pdf> <with-images true|false>
+live_summary_case() {
+  local case="$1" key="$2" pdf="$3" with_images="$4"
+  local node="summary-$case" dir="$OUT_DIR/summary-$case"
+  mkdir -p "$dir"
+  live_make_bundle "live-$node" "$pdf" || return 1
+  local graph
+  graph=$(live_base_graph "$LIVE_ID" | live_add_node n_s summary '{}' true | live_add_edge n_x md n_s md)
+  [[ "$with_images" == true ]] && graph=$(echo "$graph" | live_add_edge n_x images n_s images)
+  live_finish "$node" "$graph" n_s n_x || return 1
+  local src="$dir/artifacts/n_x-md-0-md.md" dst="$dir/artifacts/n_s-md-0-md.md"
+  if [[ -f "$src" && -f "$dst" ]]; then
+    local n_images=0
+    [[ "$with_images" == true ]] && n_images=$(jq '[.nodes[] | select(.nodeId == "n_x") | .outputs[] | select(.socketId == "images") | .files | length] | add // 0' "$dir/run.json")
+    python3 "$ROOT/scripts/live/summary_check.py" "$src" "$dst" --doc "$key" --images "$n_images" \
+      --facts "$FIXTURES/facts.json" >"$dir/checks.json" || true
+    live_patch_result "$dir" '.checks = $c[0].checks | .checksOk = $c[0].ok | .sourceChars = $sc | .translatedChars = $tc | .images = $ni' \
+      --slurpfile c "$dir/checks.json" --argjson sc "$(wc -m <"$src")" --argjson tc "$(wc -m <"$dst")" --argjson ni "$n_images" || true
+  fi
+}
+
+# live_case_enabled <case>: true when LIVE_CASES is unset or lists the case (comma separated)
+live_case_enabled() { [[ -z "${LIVE_CASES:-}" || ",$LIVE_CASES," == *",$1,"* ]]; }
+
 live_node_summary() {
-  live_front_end summary || return 1
-  GRAPH=$(echo "$GRAPH" |
-    live_add_node n_s summary '{}' true |
-    live_add_edge n_x md n_s md | live_add_edge n_x images n_s images)
-  live_finish summary "$GRAPH" n_s
+  # (1) 20-page handbook with figures, (2) Korean report, (3) markdown only (images are optional, D-4),
+  # (4) 28 figures: only 20 go to the model and the summary ends with the exclusion note.
+  local rc=0
+  live_case_enabled long && { live_summary_case long handbook_en "$FIXTURES/handbook_en.pdf" true || rc=1; }
+  live_case_enabled ko && { live_summary_case ko report_ko "$FIXTURES/report_ko.pdf" true || rc=1; }
+  live_case_enabled noimg && { live_summary_case noimg report_en "$FIXTURES/report_en.pdf" false || rc=1; }
+  live_case_enabled many && { live_summary_case many gallery_en "$FIXTURES/gallery_en.pdf" true || rc=1; }
+  return "$rc"
 }
 
 live_node_analyze() {

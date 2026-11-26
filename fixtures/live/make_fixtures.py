@@ -3,6 +3,7 @@
     uv run --project extractor python fixtures/live/make_fixtures.py
 
 Outputs (next to this file):
+  gallery_en.pdf   English sensor atlas with 28 figures (more than the 20-image limit of summary)
   handbook_en.pdf  English technical handbook, 20+ pages: tables, code listings, figures
   report_en.pdf  English annual report, 4 pages, 2 tables, 2 figures
   report_ko.pdf  Korean report, 3 pages, 1 table, 1 figure (NanumGothic from engine/assets/fonts)
@@ -250,6 +251,44 @@ def korean(out: Path) -> None:
     doc.build(story)
 
 
+def unit_figure(k: int) -> io.BytesIO:
+    """Distinct picture per unit: the label 'UNIT kk' exists only as pixels, never in the text."""
+    img = Image.new("RGB", (480, 280), "white")
+    d = ImageDraw.Draw(img)
+    d.rectangle([0, 0, 479, 50], fill=PALETTE[k % len(PALETTE)])
+    d.text((16, 18), f"UNIT {k:02d}", fill="white", font_size=26)
+    for i in range(5):
+        h = 40 + ((k * 37 + i * 53) % 150)
+        d.rectangle([40 + i * 85, 260 - h, 100 + i * 85, 259], fill=PALETTE[(k + i) % len(PALETTE)])
+    return _jpeg(img)
+
+
+def gallery(out: Path) -> None:
+    ss = getSampleStyleSheet()
+    body = ss["BodyText"]
+    doc = SimpleDocTemplate(str(out), pagesize=A4, title="Aurora Robotics Sensor Atlas")
+    story: list = [
+        Paragraph("Aurora Robotics Sensor Atlas", ss["Title"]),
+        Paragraph(
+            "This atlas lists the 28 sensor units installed in the Gimhae plant. Every unit is "
+            "shown with a status chart; the unit number appears only in the picture.",
+            body,
+        ),
+    ]
+    for k in range(1, 29):
+        story.append(Paragraph(f"Unit group {k}", ss["Heading3"]))
+        story.append(
+            Paragraph(
+                f"The unit in bay {k} monitors a zone of {10 + k} meters and reports every "
+                f"{2 + k % 5} seconds to the fleet controller.",
+                body,
+            )
+        )
+        story.append(RLImage(unit_figure(k), width=70 * mm, height=41 * mm))
+        story.append(Paragraph(f"Figure {k}. Status chart of the unit in bay {k}.", body))
+    doc.build(story)
+
+
 SENTENCES = [
     "The fleet controller assigns every pick task to the nearest idle robot and re-plans the route when an aisle is blocked.",
     "Operators can pause a zone from the dashboard, and the robots finish their current motion before they stop.",
@@ -326,7 +365,7 @@ def handbook(out: Path) -> None:
 
 
 if __name__ == "__main__":
-    for name, fn in [("report_en.pdf", english), ("report_ko.pdf", korean), ("handbook_en.pdf", handbook)]:
+    for name, fn in [("report_en.pdf", english), ("report_ko.pdf", korean), ("handbook_en.pdf", handbook), ("gallery_en.pdf", gallery)]:
         target = HERE / name
         fn(target)
         print(f"wrote {target} ({target.stat().st_size} bytes)")

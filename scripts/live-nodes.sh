@@ -173,7 +173,7 @@ cell() { tr '\r\n|' '  /' | tr -s ' '; }
   for f in $(result_files); do
     jq -e '.checks' "$f" >/dev/null 2>&1 || continue
     echo
-    echo "### $(jq -r .node "$f") 점검표 (원문 $(jq -r .sourceChars "$f")자 → 번역 $(jq -r .translatedChars "$f")자)"
+    echo "### $(jq -r .node "$f") 점검표 (원문 $(jq -r .sourceChars "$f")자 → 결과 $(jq -r .translatedChars "$f")자$(jq -r 'if .images != null then ", 이미지 \(.images)장" else "" end' "$f"))"
     echo
     echo "| 항목 | 결과 | 상세 |"
     echo "| :--- | :--- | :--- |"
