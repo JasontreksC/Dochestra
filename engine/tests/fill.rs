@@ -1258,3 +1258,279 @@ async fn a_reportlab_form_can_be_filled() {
     assert!(need_appearances(&out));
     assert_eq!(env.report()["filled"].as_array().unwrap().len(), 6);
 }
+
+// ------------------------------------------------------------------ realistic forms (make_forms.py)
+//
+// `form_ko.pdf` (Korean and English field names), `form_codes.pdf` (Text1, Check1, Group1 ...: the labels
+// exist only as page text) and `form_multi.pdf` (3 pages, repeated names, radio rows) come from
+// `tests/fixtures/make_forms.py`. They were written to reproduce the findings of scripts/live/fill_check.sh.
+
+fn fixture(file: &str) -> Vec<u8> {
+    std::fs::read(format!(
+        "{}/tests/fixtures/{file}",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap_or_else(|e| panic!("fixture {file}: {e}"))
+}
+
+fn all_fields(bytes: &[u8]) -> Vec<FormField> {
+    discover(&load(bytes))
+}
+
+/// `(name, /V as text)` of every field in document order (repeated names appear repeatedly).
+fn values_of(bytes: &[u8]) -> Vec<(String, Option<String>)> {
+    all_fields(bytes)
+        .into_iter()
+        .map(|f| (f.name, f.current))
+        .collect()
+}
+
+fn mapping_answer(pairs: &[(&str, &str)]) -> Reply {
+    let map: serde_json::Map<String, Value> = pairs
+        .iter()
+        .map(|(k, v)| ((*k).to_owned(), json!(v)))
+        .collect();
+    answer(&Value::Object(map).to_string())
+}
+
+#[test]
+fn printed_labels_are_found_next_to_every_field_of_the_realistic_forms() {
+    use dochestra_engine::nodes::fill::labels::collect;
+
+    let label_of = |file: &str| -> HashMap<String, (Option<String>, Vec<Option<String>>)> {
+        let doc = load(&fixture(file));
+        let fields = discover(&doc);
+        fields
+            .iter()
+            .zip(collect(&doc, &fields))
+            .map(|(f, h)| (f.name.clone(), (h.label, h.option_labels)))
+            .collect()
+    };
+
+    // Labels left of the fields, to the right of checkboxes and radio widgets.
+    let codes = label_of("form_codes.pdf");
+    assert_eq!(codes["Text1"].0.as_deref(), Some("성명"));
+    assert_eq!(codes["Text3"].0.as_deref(), Some("주소"));
+    assert_eq!(codes["Text6"].0.as_deref(), Some("비고"));
+    assert_eq!(codes["Dropdown1"].0.as_deref(), Some("지역"));
+    assert_eq!(
+        codes["Check1"].0.as_deref(),
+        Some("개인정보 수집·이용에 동의합니다")
+    );
+    assert_eq!(codes["Group1"].0.as_deref(), Some("성별"));
+    assert_eq!(
+        codes["Group1"].1,
+        [Some("남".to_owned()), Some("여".to_owned())]
+    );
+    assert!(
+        codes["Text2"].0.as_deref().unwrap().starts_with("생년월일"),
+        "{:?}",
+        codes["Text2"]
+    );
+
+    // Labels above the fields (page 2) and radio rows without option labels (page 3).
+    let multi = label_of("form_multi.pdf");
+    assert_eq!(multi["companion"].0.as_deref(), Some("동반자 성명"));
+    assert_eq!(multi["visit_date"].0.as_deref(), Some("참가일"));
+    assert_eq!(multi["meal"].0.as_deref(), Some("식사 신청"));
+    assert_eq!(multi["q3"].0.as_deref(), Some("장소"));
+    assert_eq!(multi["q3"].1, [None, None, None]);
+    assert_eq!(multi["comment"].0.as_deref(), Some("기타 의견"));
+}
+
+#[tokio::test]
+async fn the_llm_sees_the_printed_labels_of_code_named_fields_and_can_map_by_them() {
+    let env = Env::new();
+    let mock = spawn_llm(vec![mapping_answer(&[
+        ("이름", "Text1"),
+        ("생년월일", "Text2"),
+        ("주소", "Text3"),
+        ("연락처", "Text4"),
+        ("이메일", "Text5"),
+        ("비고", "Text6"),
+        ("동의함", "Check1"),
+        ("성별", "Group1"),
+        ("지역", "Dropdown1"),
+    ])])
+    .await;
+    let out = env
+        .fill(
+            &llm_client(&mock.url, Some(KEY)),
+            &fixture("form_codes.pdf"),
+            json!({"이름": "최도윤-비밀", "생년월일": "1988-12-03", "주소": "대전광역시 유성구", "연락처": "010-5555-7777",
+                   "이메일": "doyoon@example.com", "비고": "휠체어 좌석", "동의함": true, "성별": "여자", "지역": "대구"}),
+        )
+        .await
+        .unwrap();
+
+    // The prompt carries each field's printed label (and the radio options' labels), never a value.
+    let prompt = mock.prompt(0);
+    assert!(
+        prompt.contains("- Text1 (text) — label: \"성명\""),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("- Text6 (text) — label: \"비고\""),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("- Check1 (checkbox) — label: \"개인정보 수집·이용에 동의합니다\""),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("- Group1 (radio: Choice1 \"남\" | Choice2 \"여\") — label: \"성별\""),
+        "{prompt}"
+    );
+    assert!(
+        !prompt.contains("최도윤") && !prompt.contains("doyoon@") && !prompt.contains("휠체어"),
+        "values must not be sent: {prompt}"
+    );
+
+    let values: HashMap<String, Option<String>> = values_of(&out).into_iter().collect();
+    assert_eq!(values["Text1"].as_deref(), Some("최도윤-비밀"));
+    assert_eq!(values["Text2"].as_deref(), Some("1988-12-03"));
+    assert_eq!(values["Text3"].as_deref(), Some("대전광역시 유성구"));
+    assert_eq!(values["Text4"].as_deref(), Some("010-5555-7777"));
+    assert_eq!(values["Text5"].as_deref(), Some("doyoon@example.com"));
+    assert_eq!(values["Text6"].as_deref(), Some("휠체어 좌석"));
+    assert_eq!(values["Check1"].as_deref(), Some("Yes"));
+    assert_eq!(values["Dropdown1"].as_deref(), Some("대구"));
+    // "여자" selects the option whose printed label is "여" (the option itself is called Choice2).
+    assert_eq!(values["Group1"].as_deref(), Some("Choice2"));
+    assert_eq!(env.report()["filled"].as_array().unwrap().len(), 9);
+}
+
+#[tokio::test]
+async fn radio_values_select_the_option_by_its_printed_label() {
+    for (value, expected) in [
+        ("남자", "male"),
+        ("여성", "female"),
+        ("여", "female"),
+        ("Male", "male"),
+        ("female", "female"),
+    ] {
+        let env = Env::new();
+        let out = env
+            .fill(&no_llm(), &fixture("form_ko.pdf"), json!({"성별": value}))
+            .await
+            .unwrap();
+        let values: HashMap<String, Option<String>> = values_of(&out).into_iter().collect();
+        assert_eq!(values["성별"].as_deref(), Some(expected), "{value}");
+    }
+
+    // An answer no label contains is not guessed: the field stays untouched, the warning lists the labels.
+    let env = Env::new();
+    let out = env
+        .fill(
+            &no_llm(),
+            &fixture("form_ko.pdf"),
+            json!({"이름": "홍길동", "성별": "기타"}),
+        )
+        .await
+        .unwrap();
+    let values: HashMap<String, Option<String>> = values_of(&out).into_iter().collect();
+    assert_eq!(values["성별"], None);
+    assert_eq!(values["이름"].as_deref(), Some("홍길동"));
+    assert!(
+        env.report()["warnings"].to_string().contains("male (남)"),
+        "{}",
+        env.report()["warnings"]
+    );
+}
+
+#[tokio::test]
+async fn a_key_fills_every_field_that_repeats_its_name() {
+    let env = Env::new();
+    let out = env
+        .fill(
+            &no_llm(),
+            &fixture("form_multi.pdf"),
+            json!({"name": "박서연", "phone": "010-9876-5432", "organization": "한빛대학교"}),
+        )
+        .await
+        .unwrap();
+    let values = values_of(&out);
+    let of = |name: &str| -> Vec<Option<&str>> {
+        values
+            .iter()
+            .filter(|(n, _)| n == name)
+            .map(|(_, v)| v.as_deref())
+            .collect()
+    };
+    assert_eq!(of("name"), [Some("박서연"), Some("박서연")]);
+    assert_eq!(
+        of("phone"),
+        [
+            Some("010-9876-5432"),
+            Some("010-9876-5432"),
+            Some("010-9876-5432")
+        ]
+    );
+    assert_eq!(of("organization"), [Some("한빛대학교")]);
+    assert_eq!(of("companion"), [Some("")], "other fields stay untouched");
+
+    // The report lists every filled field and none of them as untouched.
+    let report = env.report();
+    assert_eq!(report["filled"].as_array().unwrap().len(), 2 + 3 + 1);
+    let untouched = report["untouchedFields"].to_string();
+    assert!(
+        !untouched.contains("\"name\"") && !untouched.contains("\"phone\""),
+        "{untouched}"
+    );
+}
+
+#[tokio::test]
+async fn repeated_names_are_offered_to_the_llm_once_and_never_after_a_match() {
+    let env = Env::new();
+    let mock = spawn_llm(vec![mapping_answer(&[("동반자", "companion")])]).await;
+    let out = env
+        .fill(
+            &llm_client(&mock.url, Some(KEY)),
+            &fixture("form_multi.pdf"),
+            json!({"name": "박서연", "동반자": "박지훈"}),
+        )
+        .await
+        .unwrap();
+    let prompt = mock.prompt(0);
+    assert!(
+        !prompt.contains("- name ("),
+        "matched names are not offered: {prompt}"
+    );
+    assert_eq!(prompt.matches("- phone (text)").count(), 1, "{prompt}");
+    assert_eq!(prompt.matches("- q1 (radio").count(), 1, "{prompt}");
+    let values = values_of(&out);
+    assert!(values.contains(&("companion".to_owned(), Some("박지훈".to_owned()))));
+    assert_eq!(
+        values
+            .iter()
+            .filter(|(n, v)| n == "name" && v.as_deref() == Some("박서연"))
+            .count(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn numbers_checkbox_words_and_radio_rows_fill_the_multi_page_form() {
+    let env = Env::new();
+    let out = env
+        .fill(
+            &no_llm(),
+            &fixture("form_multi.pdf"),
+            json!({"meal": "예", "parking": "아니오", "q1": 3, "q2": 2, "q3": "3", "q4": 1, "q5": 3, "visit_date": "2026-12-05"}),
+        )
+        .await
+        .unwrap();
+    let values: HashMap<String, Option<String>> = values_of(&out).into_iter().collect();
+    assert_eq!(values["meal"].as_deref(), Some("Yes"));
+    assert_eq!(values["parking"].as_deref(), Some("Off"));
+    for (q, v) in [
+        ("q1", "3"),
+        ("q2", "2"),
+        ("q3", "3"),
+        ("q4", "1"),
+        ("q5", "3"),
+    ] {
+        assert_eq!(values[q].as_deref(), Some(v), "{q}");
+    }
+    assert_eq!(values["visit_date"].as_deref(), Some("2026-12-05"));
+}

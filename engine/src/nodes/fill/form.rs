@@ -5,6 +5,8 @@ use std::collections::HashSet;
 use lopdf::{Dictionary, Document, Object, ObjectId, StringFormat};
 use serde_json::Value;
 
+use super::labels::Hints;
+
 /// `Ff` bit 16 (value 1 << 15): radio button group.
 const FLAG_RADIO: i64 = 1 << 15;
 /// `Ff` bit 17 (value 1 << 16): push button.
@@ -377,8 +379,48 @@ pub fn to_bool(value: &Value) -> Option<bool> {
     }
 }
 
+/// Picks the radio option a value means: the option name (exact, then normalized), then the printed
+/// label beside the widget (equal, then — when exactly one label qualifies — contained in the value or
+/// containing it: "남자" selects the option labelled "남").
+fn radio_choice<'a>(
+    options: &'a [String],
+    labels: &[Option<String>],
+    wanted: &str,
+) -> Option<&'a String> {
+    if let Some(option) = options.iter().find(|o| o.as_str() == wanted) {
+        return Some(option);
+    }
+    let wanted = normalize(wanted);
+    if wanted.is_empty() {
+        return None;
+    }
+    if let Some(option) = options.iter().find(|o| normalize(o) == wanted) {
+        return Some(option);
+    }
+    let labels: Vec<Option<String>> = labels.iter().map(|l| l.as_deref().map(normalize)).collect();
+    let unique = |test: &dyn Fn(&str) -> bool| -> Option<&'a String> {
+        let hits: Vec<usize> = labels
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.as_deref().is_some_and(|l| !l.is_empty() && test(l)))
+            .map(|(i, _)| i)
+            .collect();
+        match hits.as_slice() {
+            [only] => options.get(*only),
+            _ => None,
+        }
+    };
+    unique(&|l| l == wanted)
+        .or_else(|| unique(&|l| wanted.contains(l) || l.contains(wanted.as_str())))
+}
+
 /// Decides how `value` is written into `field`. `Err` explains why it cannot be applied.
 pub fn plan_write(field: &FormField, value: &Value) -> Result<Planned, String> {
+    plan_write_with(field, value, &Hints::default())
+}
+
+/// Like [`plan_write`], using what the page says about the field (printed option labels).
+pub fn plan_write_with(field: &FormField, value: &Value, hints: &Hints) -> Result<Planned, String> {
     let unsupported = || format!("필드 '{}' 에 쓸 수 없는 값입니다: {value}", field.name);
     match &field.kind {
         FieldKind::Text => {
@@ -401,17 +443,23 @@ pub fn plan_write(field: &FormField, value: &Value) -> Result<Planned, String> {
             let wanted = scalar_text(value)
                 .filter(|_| !value.is_boolean())
                 .ok_or_else(unsupported)?;
-            let chosen = options
-                .iter()
-                .find(|o| **o == wanted)
-                .or_else(|| options.iter().find(|o| normalize(o) == normalize(&wanted)))
-                .ok_or_else(|| {
-                    format!(
-                        "라디오 '{}' 에 없는 선택지입니다: {wanted} (선택지: {})",
-                        field.name,
-                        options.join(", ")
+            let chosen = radio_choice(options, &hints.option_labels, &wanted).ok_or_else(|| {
+                let shown: Vec<String> = options
+                    .iter()
+                    .enumerate()
+                    .map(
+                        |(i, o)| match hints.option_labels.get(i).and_then(Option::as_deref) {
+                            Some(label) => format!("{o} ({label})"),
+                            None => o.clone(),
+                        },
                     )
-                })?;
+                    .collect();
+                format!(
+                    "라디오 '{}' 에 없는 선택지입니다: {wanted} (선택지: {})",
+                    field.name,
+                    shown.join(", ")
+                )
+            })?;
             Ok(Planned {
                 shown: chosen.clone(),
                 write: FieldWrite::Radio(chosen.clone()),
@@ -680,5 +728,36 @@ mod tests {
         let unknown = plan_write(&choice, &json!("대구")).unwrap();
         assert_eq!(unknown.write, FieldWrite::Choice("대구".into()));
         assert!(unknown.warning.unwrap().contains("선택지에 없는 값"));
+    }
+
+    #[test]
+    fn radio_options_are_found_by_name_then_by_printed_label() {
+        let options = vec!["male".to_owned(), "female".to_owned()];
+        let labels = vec![Some("남".to_owned()), Some("여".to_owned())];
+        let pick = |wanted: &str| radio_choice(&options, &labels, wanted).map(String::as_str);
+        assert_eq!(pick("female"), Some("female"));
+        assert_eq!(pick("FEMALE"), Some("female"));
+        assert_eq!(pick("남"), Some("male"));
+        assert_eq!(pick("남자"), Some("male"));
+        assert_eq!(pick("여성"), Some("female"));
+        assert_eq!(pick("기타"), None);
+        assert_eq!(pick(""), None);
+        // Without labels only names count.
+        assert_eq!(radio_choice(&options, &[], "남자"), None);
+    }
+
+    #[test]
+    fn an_ambiguous_label_match_is_not_guessed() {
+        let options = vec!["a".to_owned(), "b".to_owned()];
+        let labels = vec![Some("대".to_owned()), Some("중".to_owned())];
+        // "대중" contains both labels: nothing is chosen.
+        assert_eq!(radio_choice(&options, &labels, "대중"), None);
+        assert_eq!(
+            radio_choice(&options, &labels, "중").map(String::as_str),
+            Some("b")
+        );
+        // Equal labels are ambiguous too.
+        let same = vec![Some("예".to_owned()), Some("예".to_owned())];
+        assert_eq!(radio_choice(&options, &same, "예"), None);
     }
 }

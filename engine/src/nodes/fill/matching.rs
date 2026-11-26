@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use super::form::{FieldKind, FormField, normalize};
+use super::labels::Hints;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -86,13 +87,41 @@ pub fn match_keys(keys: &BTreeMap<String, Value>, fields: &[FormField]) -> Vec<M
     matches
 }
 
+/// A key that matched a field also fills every other field with the very same name (a form that
+/// repeats "name" or "phone" on several pages is meant to carry one value; the PDF spec treats
+/// same-named fields as one field). Keeps each field used at most once.
+pub fn expand_same_name(matches: Vec<Match>, fields: &[FormField]) -> Vec<Match> {
+    let mut used: Vec<bool> = vec![false; fields.len()];
+    for m in &matches {
+        used[m.field] = true;
+    }
+    let mut out = matches.clone();
+    for m in &matches {
+        for (i, other) in fields.iter().enumerate() {
+            if !used[i] && other.name == fields[m.field].name {
+                used[i] = true;
+                out.push(Match {
+                    key: m.key.clone(),
+                    field: i,
+                    method: m.method,
+                });
+            }
+        }
+    }
+    out
+}
+
 pub const LLM_SYSTEM_PROMPT: &str = "\
 You map input keys to the fields of a PDF form. Output ONLY one JSON object of the form \
 {\"<key>\": \"<field name>\" or null, ...} with every given key as a property.
 
+Each field is listed with its name, its type and, when known, `label` (the text printed next to \
+it on the page) and `tooltip`. Field names are often meaningless codes such as Text1 or Check3: \
+then decide by the label. A radio field also shows the printed label of each of its options.
+
 Rules:
-- Choose a field only when it clearly means the same thing as the key. Names may be in any \
-language, abbreviated, or written in different cases or styles.
+- Choose a field only when it clearly means the same thing as the key. Names and labels may be \
+in any language, abbreviated, or written in different cases or styles.
 - Use the exact field names from the list; each field may be chosen at most once.
 - Use null when no field fits or you are unsure.
 - Do not output anything but the JSON object.";
@@ -109,16 +138,28 @@ fn json_type(value: &Value) -> &'static str {
 }
 
 /// The user prompt: remaining keys (with their JSON types — never their values) and fields.
-pub fn llm_prompt(keys: &[(&String, &Value)], fields: &[&FormField]) -> String {
+pub fn llm_prompt(keys: &[(&String, &Value)], fields: &[(&FormField, &Hints)]) -> String {
     let mut prompt = String::from("Keys:\n");
     for (key, value) in keys {
         prompt.push_str(&format!("- {key} ({})\n", json_type(value)));
     }
     prompt.push_str("\nFields:\n");
-    for field in fields {
+    for (field, hints) in fields {
         let detail = match &field.kind {
             FieldKind::Text | FieldKind::Checkbox { .. } => String::new(),
-            FieldKind::Radio { options } => format!(": {}", options.join(" | ")),
+            FieldKind::Radio { options } => {
+                let list: Vec<String> = options
+                    .iter()
+                    .enumerate()
+                    .map(|(i, option)| {
+                        match hints.option_labels.get(i).and_then(Option::as_deref) {
+                            Some(label) => format!("{option} \"{label}\""),
+                            None => option.clone(),
+                        }
+                    })
+                    .collect();
+                format!(": {}", list.join(" | "))
+            }
             FieldKind::Choice { options } => {
                 let list: Vec<String> = options
                     .iter()
@@ -133,8 +174,15 @@ pub fn llm_prompt(keys: &[(&String, &Value)], fields: &[&FormField]) -> String {
                 format!(": {}", list.join(" | "))
             }
         };
+        let mut extra = String::new();
+        if let Some(label) = &hints.label {
+            extra.push_str(&format!(" — label: \"{label}\""));
+        }
+        if let Some(tooltip) = &hints.tooltip {
+            extra.push_str(&format!(" — tooltip: \"{tooltip}\""));
+        }
         prompt.push_str(&format!(
-            "- {} ({}{detail})\n",
+            "- {} ({}{detail}){extra}\n",
             field.name,
             field.kind.label()
         ));
@@ -309,7 +357,11 @@ mod tests {
         };
         let (k1, v1) = ("성명".to_owned(), json!("홍길동-비밀"));
         let (k2, v2) = ("동의".to_owned(), json!(true));
-        let prompt = llm_prompt(&[(&k1, &v1), (&k2, &v2)], &[&radio, &choice, &check]);
+        let none = Hints::default();
+        let prompt = llm_prompt(
+            &[(&k1, &v1), (&k2, &v2)],
+            &[(&radio, &none), (&choice, &none), (&check, &none)],
+        );
         assert!(prompt.contains("- 성명 (string)") && prompt.contains("- 동의 (boolean)"));
         assert!(prompt.contains("- gender (radio: Male | Female)"));
         assert!(prompt.contains("- city (choice: sel (서울) | KR)"));
@@ -333,5 +385,88 @@ mod tests {
         assert!(parse_llm_mapping("no json").is_err());
         assert!(parse_llm_mapping("{\"a\": 5}").is_err());
         assert!(parse_llm_mapping("[1,2]").is_err());
+    }
+
+    #[test]
+    fn a_matched_name_extends_to_the_fields_repeating_it() {
+        let fields = vec![
+            text("name", 1),
+            text("phone", 2),
+            text("name", 3),
+            text("name", 4),
+        ];
+        let matches = match_keys(&keys(&[("name", json!("x"))]), &fields);
+        assert_eq!(matches.len(), 1);
+        let expanded = expand_same_name(matches, &fields);
+        let mut targets: Vec<usize> = expanded.iter().map(|m| m.field).collect();
+        targets.sort_unstable();
+        assert_eq!(targets, [0, 2, 3]);
+        assert!(
+            expanded
+                .iter()
+                .all(|m| m.key == "name" && m.method == Method::Exact)
+        );
+
+        // A field another key already took is left alone.
+        let taken = vec![
+            Match {
+                key: "name".into(),
+                field: 0,
+                method: Method::Exact,
+            },
+            Match {
+                key: "other".into(),
+                field: 2,
+                method: Method::Llm,
+            },
+        ];
+        let expanded = expand_same_name(taken, &fields);
+        assert_eq!(expanded.len(), 3);
+        assert_eq!(expanded.iter().filter(|m| m.key == "name").count(), 2); // fields 0 and 3
+    }
+
+    #[test]
+    fn the_prompt_shows_labels_option_labels_and_tooltips() {
+        let radio = FormField {
+            name: "Group1".into(),
+            kind: FieldKind::Radio {
+                options: vec!["Choice1".into(), "Choice2".into()],
+            },
+            current: None,
+            id: (5, 0),
+            widgets: vec![],
+        };
+        let plain = FormField {
+            name: "Text1".into(),
+            kind: FieldKind::Text,
+            current: None,
+            id: (6, 0),
+            widgets: vec![],
+        };
+        let radio_hints = Hints {
+            label: Some("성별".into()),
+            tooltip: None,
+            option_labels: vec![Some("남".into()), None],
+        };
+        let text_hints = Hints {
+            label: Some("성명".into()),
+            tooltip: Some("Applicant name".into()),
+            option_labels: vec![],
+        };
+        let key = "이름".to_owned();
+        let value = json!("비밀");
+        let prompt = llm_prompt(
+            &[(&key, &value)],
+            &[(&radio, &radio_hints), (&plain, &text_hints)],
+        );
+        assert!(
+            prompt.contains("- Group1 (radio: Choice1 \"남\" | Choice2) — label: \"성별\""),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("- Text1 (text) — label: \"성명\" — tooltip: \"Applicant name\""),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("비밀"));
     }
 }

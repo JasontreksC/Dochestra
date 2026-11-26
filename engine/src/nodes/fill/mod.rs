@@ -1,9 +1,10 @@
 //! `fill` node: fills the AcroForm fields of a PDF from a JSON object of key-value pairs.
 
 pub mod form;
+pub mod labels;
 pub mod matching;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use lopdf::Document;
 use serde::Serialize;
@@ -14,8 +15,11 @@ use crate::clients::llm::{LlmClient, LlmRequest, UserBlock};
 use crate::executor::runner::{Artifact, NodeContext, NodeError, NodeInputs, NodeOutputs};
 use crate::storage::{single_output_path, work_dir};
 use crate::types::{DataType, ScalarType};
-use form::{FormField, apply, discover, plan_write, set_need_appearances};
-use matching::{LLM_SYSTEM_PROMPT, Match, Method, llm_prompt, match_keys, parse_llm_mapping};
+use form::{FormField, apply, discover, plan_write_with, set_need_appearances};
+use labels::Hints;
+use matching::{
+    LLM_SYSTEM_PROMPT, Match, Method, expand_same_name, llm_prompt, match_keys, parse_llm_mapping,
+};
 
 /// How many field names the "nothing matched" error lists.
 const LISTED_FIELDS: usize = 20;
@@ -84,26 +88,30 @@ pub async fn run(
     let pdf_bytes = tokio::fs::read(pdf_path)
         .await
         .map_err(|e| failed(format!("PDF 를 읽을 수 없습니다: {e}")))?;
-    let (mut doc, fields) =
-        tokio::task::spawn_blocking(move || -> Result<(Document, Vec<FormField>), String> {
+    let (mut doc, fields, hints) = tokio::task::spawn_blocking(
+        move || -> Result<(Document, Vec<FormField>, Vec<Hints>), String> {
             let doc = Document::load_mem(&pdf_bytes)
                 .map_err(|e| format!("PDF 를 읽을 수 없습니다: {e}"))?;
             if doc.is_encrypted() {
                 return Err("암호화된 PDF 는 지원하지 않습니다".to_owned());
             }
             let fields = discover(&doc);
-            Ok((doc, fields))
-        })
-        .await
-        .map_err(|e| NodeError::Other(e.into()))?
-        .map_err(failed)?;
+            let hints = labels::collect(&doc, &fields);
+            Ok((doc, fields, hints))
+        },
+    )
+    .await
+    .map_err(|e| NodeError::Other(e.into()))?
+    .map_err(failed)?;
     if fields.is_empty() {
         return Err(failed("PDF 에 입력 가능한 폼 필드가 없습니다"));
     }
 
     // --- matching: exact, normalized, then the LLM for what is left
     let mut matches = match_keys(&keys, &fields);
-    matches.extend(llm_matches(llm, &keys, &fields, &matches, &mut warnings).await);
+    matches.extend(llm_matches(llm, &keys, &fields, &hints, &matches, &mut warnings).await);
+    // Fields repeating a matched field's name (the same value on several pages) are filled too.
+    let matches = expand_same_name(matches, &fields);
 
     // --- write
     let mut filled: Vec<Filled> = Vec::new();
@@ -115,7 +123,7 @@ pub async fn run(
     } in &matches
     {
         let field = &fields[*index];
-        let planned = match plan_write(field, &keys[key]) {
+        let planned = match plan_write_with(field, &keys[key], &hints[*index]) {
             Ok(planned) => planned,
             Err(reason) => {
                 warnings.push(reason);
@@ -202,6 +210,7 @@ async fn llm_matches(
     llm: &LlmClient,
     keys: &BTreeMap<String, Value>,
     fields: &[FormField],
+    hints: &[Hints],
     done: &[Match],
     warnings: &mut Vec<String>,
 ) -> Vec<Match> {
@@ -209,10 +218,13 @@ async fn llm_matches(
         .iter()
         .filter(|(k, _)| !done.iter().any(|m| &m.key == *k))
         .collect();
+    // A name the form repeats is offered once, and never when an earlier match already took that name.
+    let mut listed: HashSet<&str> = done.iter().map(|m| fields[m.field].name.as_str()).collect();
     let remaining_fields: Vec<(usize, &FormField)> = fields
         .iter()
         .enumerate()
         .filter(|(i, _)| !done.iter().any(|m| m.field == *i))
+        .filter(|(_, f)| listed.insert(f.name.as_str()))
         .collect();
     if remaining_keys.is_empty() || remaining_fields.is_empty() {
         return Vec::new();
@@ -220,7 +232,10 @@ async fn llm_matches(
 
     let prompt = llm_prompt(
         &remaining_keys,
-        &remaining_fields.iter().map(|(_, f)| *f).collect::<Vec<_>>(),
+        &remaining_fields
+            .iter()
+            .map(|(i, f)| (*f, &hints[*i]))
+            .collect::<Vec<_>>(),
     );
     let answer = match llm
         .complete(LlmRequest {
