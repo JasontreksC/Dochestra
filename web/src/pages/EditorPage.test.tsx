@@ -116,6 +116,8 @@ describe('EditorPage', () => {
         'GET /api/workflows': jsonResponse([]),
         'GET /api/nodes': jsonResponse(CATALOG),
       'GET /api/workflows/abc/runs': jsonResponse([]),
+        // the added node is auto-selected, so the Inspector's bundle picker loads bundles
+        'GET /api/bundles': jsonResponse([]),
         'GET /api/workflows/abc': jsonResponse(WORKFLOW),
         'PUT /api/workflows/abc': jsonResponse(
           {
@@ -140,7 +142,12 @@ describe('EditorPage', () => {
       await userEvent.click(await screen.findByRole('button', { name: 'PDF 번들' }))
       await userEvent.click(screen.getByRole('button', { name: '저장' }))
 
-      const alert = await screen.findByRole('alert')
+      // The auto-selected new node's Inspector may show its own param warning (also role=alert).
+      const alert = await waitFor(() => {
+        const found = screen.getAllByRole('alert').find((a) => a.textContent?.includes('TYPE_MISMATCH'))
+        expect(found).toBeDefined()
+        return found!
+      })
       expect(alert).toHaveTextContent('TYPE_MISMATCH: 엣지 e1 타입 불일치 (PDF ← LIST[PDF])')
       expect(alert).toHaveTextContent('DUPLICATE_ID')
       expect(screen.getByText('저장되지 않음')).toBeInTheDocument()

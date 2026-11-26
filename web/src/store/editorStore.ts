@@ -6,6 +6,7 @@ import type { RunStatus } from '@/bindings/RunStatus'
 import type { NodeSpec } from '@/bindings/NodeSpec'
 import type { Workflow } from '@/bindings/Workflow'
 import { checkConnection } from '@/lib/connection.ts'
+import { newId } from '@/lib/ids.ts'
 import {
   toFlow,
   type DochestraFlowNode,
@@ -29,7 +30,8 @@ interface EditorState {
   onNodesChange: (changes: NodeChangeset<DochestraFlowNode>) => void
   onEdgesChange: (changes: EdgeChangeset<TypedFlowEdge>) => void
   onConnect: (connection: Connection) => void
-  addNode: (kind: NodeKind, position: { x: number; y: number }) => void
+  /** Adds a node, makes it the only selected node, and returns its id (null for unknown kinds). */
+  addNode: (kind: NodeKind, position: { x: number; y: number }) => string | null
   updateNodeParams: (id: string, params: unknown) => void
   setOutput: (id: string, isOutput: boolean) => void
   removeNode: (id: string) => void
@@ -104,7 +106,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     const check = checkConnection(connection, s.nodes.map((n) => ({ id: n.id, kind: n.data.kind })), s.edges, s.catalog)
     if (!check.ok) return
     const edge: TypedFlowEdge = {
-      id: `e-${crypto.randomUUID()}`,
+      id: `e-${newId()}`,
       type: 'typed',
       source: connection.source,
       sourceHandle: connection.sourceHandle,
@@ -117,14 +119,21 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 
   addNode: (kind, position) => {
     const spec = get().catalog.find((c) => c.kind === kind)
-    if (!spec) return
+    if (!spec) return null
     const node: DochestraFlowNode = {
-      id: crypto.randomUUID(),
+      id: newId(),
       type: 'dochestra',
       position,
+      selected: true,
       data: { kind, params: structuredClone(spec.defaultParams), isOutput: false },
     }
-    set((s) => ({ nodes: [...s.nodes, node], dirty: true, issueNodeIds: NO_ISSUES }))
+    set((s) => ({
+      nodes: [...s.nodes.map((n) => (n.selected ? { ...n, selected: false } : n)), node],
+      selectedNodeId: node.id,
+      dirty: true,
+      issueNodeIds: NO_ISSUES,
+    }))
+    return node.id
   },
 
   updateNodeParams: (id, params) =>

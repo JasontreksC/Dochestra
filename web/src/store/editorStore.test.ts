@@ -1,5 +1,5 @@
 import { EdgeChangeset, NodeChangeset, type NodeChange } from '@xyflow/react'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Workflow } from '@/bindings/Workflow'
 import type { DochestraFlowNode, TypedFlowEdge } from '@/lib/graphMapping.ts'
 import { CATALOG } from '@/test/utils.tsx'
@@ -47,8 +47,17 @@ describe('editorStore', () => {
     expect(CATALOG[0]?.defaultParams).toEqual({ bundleId: null })
   })
 
+  it('addNode makes the new node the only selected node', () => {
+    store().onNodesChange(nodeChanges({ type: 'select', id: 'a', selected: true }))
+    expect(store().nodes.find((n) => n.id === 'a')?.selected).toBe(true)
+    const id = store().addNode('extract', { x: 0, y: 0 })
+    expect(id).not.toBeNull()
+    expect(store().selectedNodeId).toBe(id)
+    expect(store().nodes.filter((n) => n.selected).map((n) => n.id)).toEqual([id])
+  })
+
   it('addNode ignores kinds missing from the catalog', () => {
-    store().addNode('voice', { x: 0, y: 0 })
+    expect(store().addNode('voice', { x: 0, y: 0 })).toBeNull()
     expect(store().nodes).toHaveLength(2)
     expect(store().dirty).toBe(false)
   })
@@ -152,5 +161,25 @@ describe('editorStore issues and run state', () => {
     store().load(WORKFLOW, CATALOG)
     expect(store().runNodeStatus).toEqual({})
     expect(store().issueNodeIds.size).toBe(0)
+  })
+})
+
+describe('editorStore without crypto.randomUUID (insecure http context)', () => {
+  const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+  beforeEach(() => {
+    const real = globalThis.crypto
+    vi.stubGlobal('crypto', {
+      getRandomValues: real.getRandomValues.bind(real),
+    })
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('addNode and onConnect still work', () => {
+    expect(typeof crypto.randomUUID).toBe('undefined')
+    const id = store().addNode('pick_pdf', { x: 0, y: 100 })
+    expect(id).toMatch(UUID_V4)
+    store().onConnect({ source: 'a', sourceHandle: 'files', target: id!, targetHandle: 'files' })
+    expect(store().edges).toHaveLength(2)
+    expect(store().edges.at(-1)!.id).toMatch(/^e-[0-9a-f-]{36}$/)
   })
 })

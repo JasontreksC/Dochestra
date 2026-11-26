@@ -1,3 +1,4 @@
+import os from 'node:os'
 import path from 'node:path'
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test'
 
@@ -57,6 +58,69 @@ async function cleanup(request: APIRequestContext) {
 
 test.afterEach(async ({ request }) => {
   await cleanup(request)
+})
+
+async function createWorkflow(page: Page, name: string, origin = '') {
+  await page.goto(`${origin}/editor`)
+  await page.getByLabel('새 워크플로 이름').fill(name)
+  await page.getByRole('button', { name: '생성' }).click()
+  await expect(page).toHaveURL(/\/editor\/[0-9a-f-]{36}$/)
+  await expect(page.getByRole('heading', { level: 1, name })).toBeVisible()
+}
+
+const palette = (page: Page) => page.getByRole('navigation', { name: '노드 팔레트' })
+const inspectorHeading = (page: Page, label: string) =>
+  page.getByRole('complementary', { name: '인스펙터' }).getByRole('heading', { level: 2, name: label })
+
+test('palette: drag a node onto the canvas places and selects it at the drop point', async ({ page }) => {
+  await createWorkflow(page, `${RUN_TAG}-dnd`)
+  await expect(palette(page).getByText('클릭하거나 캔버스로 끌어다 놓으세요')).toBeVisible()
+
+  const pane = page.locator('.react-flow__pane')
+  const paneBox = await pane.boundingBox()
+  if (!paneBox) throw new Error('pane has no bounding box')
+  const target = { x: Math.round(paneBox.width * 0.3), y: Math.round(paneBox.height * 0.4) }
+  await palette(page).getByRole('button', { name: '추출' }).dragTo(pane, { targetPosition: target })
+
+  const nodes = page.locator('.react-flow__node')
+  await expect(nodes).toHaveCount(1)
+  const added = node(page, '추출')
+  await expect(added).toBeVisible()
+  const c = await center(added)
+  expect(Math.abs(c.x - (paneBox.x + target.x))).toBeLessThan(120)
+  expect(Math.abs(c.y - (paneBox.y + target.y))).toBeLessThan(120)
+  await expect(added).toHaveClass(/selected/)
+  await expect(inspectorHeading(page, '추출')).toBeVisible()
+  await expect(page.getByText('저장되지 않음')).toBeVisible()
+})
+
+test('palette: click-adding three nodes yields non-overlapping, visible nodes', async ({ page }) => {
+  await createWorkflow(page, `${RUN_TAG}-click`)
+  const labels = ['PDF 번들', 'PDF 선택', '추출']
+  for (const [i, label] of labels.entries()) {
+    await palette(page).getByRole('button', { name: label }).click()
+    await expect(page.locator('.react-flow__node')).toHaveCount(i + 1)
+    await expect(inspectorHeading(page, label)).toBeVisible()
+  }
+  await page.waitForTimeout(400) // let any pan transition settle
+
+  const boxes = await Promise.all(labels.map((l) => node(page, l).boundingBox()))
+  const viewport = page.viewportSize()
+  for (const [i, a] of boxes.entries()) {
+    if (!a || !viewport) throw new Error(`node ${labels[i]} has no bounding box`)
+    expect(a.x).toBeGreaterThanOrEqual(0)
+    expect(a.y).toBeGreaterThanOrEqual(0)
+    expect(a.x + a.width).toBeLessThanOrEqual(viewport.width)
+    expect(a.y + a.height).toBeLessThanOrEqual(viewport.height)
+    for (const b of boxes.slice(i + 1)) {
+      if (!b) continue
+      const overlap =
+        a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
+      expect(overlap, `${JSON.stringify(a)} overlaps ${JSON.stringify(b)}`).toBe(false)
+    }
+  }
+  await expect(page.locator('.react-flow__node.selected')).toHaveCount(1)
+  await expect(node(page, '추출')).toHaveClass(/selected/)
 })
 
 test('editor: create, wire, save, reload, run, and report issues', async ({ page }) => {
@@ -143,4 +207,53 @@ test('editor: create, wire, save, reload, run, and report issues', async ({ page
       '출력 노드가 없습니다',
     )
   })
+})
+
+/** Click-add a bundle, drop a PDF picker, and wire them — every step mints ids via newId(). */
+async function addDropConnect(page: Page) {
+  await palette(page).getByRole('button', { name: 'PDF 번들' }).click()
+  await expect(node(page, 'PDF 번들')).toBeVisible()
+  const pane = page.locator('.react-flow__pane')
+  const paneBox = await pane.boundingBox()
+  if (!paneBox) throw new Error('pane has no bounding box')
+  await palette(page)
+    .getByRole('button', { name: 'PDF 선택' })
+    .dragTo(pane, { targetPosition: { x: Math.round(paneBox.width * 0.15), y: Math.round(paneBox.height * 0.3) } })
+  await expect(page.locator('.react-flow__node')).toHaveCount(2)
+  await expect(inspectorHeading(page, 'PDF 선택')).toBeVisible()
+  await drag(page, handle(node(page, 'PDF 번들'), 'files', 'source'), handle(node(page, 'PDF 선택'), 'files', 'target'))
+  await expect(page.locator('.react-flow__edge')).toHaveCount(1)
+}
+
+test('insecure context: works without crypto.randomUUID', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(Crypto.prototype, 'randomUUID', { value: undefined, configurable: true })
+  })
+  const errors: string[] = []
+  page.on('pageerror', (e) => errors.push(e.message))
+  await createWorkflow(page, `${RUN_TAG}-nouuid`)
+  expect(await page.evaluate(() => typeof crypto.randomUUID)).toBe('undefined')
+  await addDropConnect(page)
+  expect(errors).toEqual([])
+})
+
+/** First non-loopback IPv4 of this host: http://<ip> is not a secure context (unlike localhost). */
+function hostIp(): string | undefined {
+  return Object.values(os.networkInterfaces())
+    .flat()
+    .find((a) => a && a.family === 'IPv4' && !a.internal)?.address
+}
+
+test('insecure context: real http://<host IP> origin', async ({ page, baseURL }) => {
+  const ip = hostIp()
+  test.skip(!ip || !baseURL, 'no non-loopback IPv4 address on this host')
+  const origin = new URL(baseURL!)
+  origin.hostname = ip!
+  const errors: string[] = []
+  page.on('pageerror', (e) => errors.push(e.message))
+  await createWorkflow(page, `${RUN_TAG}-ip`, origin.origin)
+  expect(await page.evaluate(() => window.isSecureContext)).toBe(false)
+  expect(await page.evaluate(() => typeof crypto.randomUUID)).toBe('undefined')
+  await addDropConnect(page)
+  expect(errors).toEqual([])
 })

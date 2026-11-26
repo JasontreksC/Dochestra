@@ -394,3 +394,45 @@
 - **검증**: `docker compose config -q` OK, `docker compose config | grep -E '…' | wc -l` = 5, `./scripts/verify-stack.sh` exit 0(smoke 6/6), 사용자 스택 컨테이너 ID 불변
 - **빈 값 처리 확인(engine/src/config.rs 조회만)**: `get = lookup(key).filter(|v| !v.trim().is_empty())` 라 빈/공백 문자열은 "미설정" 으로 취급되어 기본값 적용됨(LLM_BASE_URL/MODEL/EFFORT 모두). 문제 있는 키 없음. 단 EMBEDDING_*/TTS_* 는 현재 config.rs 에서 아직 읽지 않음(M3 후속 구현 시 동일 패턴이면 문제 없음)
 - **발견 사항**: config.rs 가 읽는 `EXTRACTOR_TIMEOUT_SECS`, `UPLOAD_LIMIT_BYTES` 는 CONTEXT §6.1 표·compose 패스스루에 없음(필요 시 오케스트레이터가 표 갱신 + 패스스루 지시)
+
+### [2026-11-26 14:10] [T-304] [w1-kobe] — DONE
+- **작업 내용**: OpenAI 임베딩 클라이언트(`clients/embedding.rs`), rag 노드(`nodes/rag.rs`: 청킹→임베딩→pgvector 저장→api JSON 출력), `db/rag.rs`, RAG 질의 API(`api/rag.rs`, `POST /api/rag/{indexId}/query`), `Config`(EMBEDDING_API_KEY/BASE_URL/MODEL, Debug 키 가림), `AppState` 에 `embedder`·`llm` 클라이언트 추가(`AppState::new` 시그니처 불변), `EngineRunner` 에 embedder + `NodeKind::Rag` 디스패치, `.env.example`(EMBEDDING_BASE_URL + 주석). 의존성: `pgvector` 0.4.2(feature sqlx).
+- **세션 메모**: 중간에 hcom 연결이 끊겨 `hcom start --as kobe` 로 재접속 후 이어서 완료(코드·파일 상태는 그대로 유지됨).
+- **실행 명령어**: 표준 검증 체인(fmt/clippy 0, cargo test 255 통과 — tests/rag.rs 12, lib 단위 추가(embedding·rag 청킹·질의 검증), `prepare --check`(.sqlx 31개), docker build) -> VERIFY_ALL_OK. web/src/bindings 변경 없음, 실제 OpenAI/Anthropic 호출 없음, compose 미사용.
+- **구현 요약**:
+  - 임베딩: 요청당 ≤96개·≤200,000자(문자 수)로 연속 배치 분할, 응답은 `index` 로 정렬해 입력 순서 보장, 개수/인덱스 연속성/차원(1536) 검증(`DimensionMismatch` '임베딩 차원이 N 입니다 (기대 1536)'), 단일 입력 200,000자 초과는 `InputTooLarge`. 재시도(429·500·502·503·529·연결 오류 3회, retry-after 우선)와 키 치환·Debug 가림은 LLM 클라이언트와 동일. 키 없음 → 'EMBEDDING_API_KEY 가 설정되지 않았습니다'(입력이 없으면 키 불필요·호출 0회).
+  - 청킹: 기존 `translate::split_chunks(md, 1500)` 재사용(빈 줄 블록 누적, 펜스 코드·표 비분할) 후 1500자 초과 단독 블록은 1500자 단위 하드 분할.
+  - rag 노드: 빈/공백 문서 → Failed('문서 내용이 비어 있습니다'). 임베딩 성공 후 한 트랜잭션으로 `rag_indexes` + `rag_chunks` 저장(임베딩 실패 시 아무것도 저장되지 않음 — 테스트로 확인). 출력 JSON 은 CONTEXT §4.3 형식 그대로(type/indexId/method/endpoint/request/chunkCount/embeddingModel).
+  - 검색: `ORDER BY embedding <=> $2, chunk_index LIMIT $3`, score = `1 - distance`. HNSW 인덱스는 모든 rag 인덱스가 공유하므로 검색 트랜잭션에서 `SET LOCAL hnsw.iterative_scan = strict_order`(pgvector 0.8.7 확인) 를 적용해 `index_id` 필터가 후처리로 결과를 비우는 문제를 방지.
+  - 질의 API: question trim 1~2000자(문자 수), topK 1~20(기본 5) 위반 400 → 인덱스 없음 404 → 질문 임베딩 → 검색 → Claude(system: 제공 문맥만 사용·질문 언어로 답변·[n] 인용·근거 없으면 없다고 답함 / user: `<context>` 에 [번호] 청크들 + `Question:`) → `RagQueryResponse`(sources 는 score 내림차순). 임베딩·LLM 실패·키 미설정 → 502 UPSTREAM(메시지에 키 없음).
+- **테스트 메모**: mock 임베딩은 텍스트의 `@N@` 마커로 결정적 단위 벡터(N번 축)를 만들고, 응답을 역순으로 돌려 index 정렬을 검증. 질의 시 기대 청크가 1위(score≈1.0)·나머지 0, 동점은 chunk_index 순, Claude 가 받은 프롬프트에 상위 청크·번호·질문 포함, topK 로 잘림, 서로 다른 인덱스 간 검색 격리, 400/404/502 경로, 키 비노출(오류 메시지 에코 포함) 확인.
+- **발견 사항 / 후속 제안**:
+  - 재시도 루프·`is_retryable`·`retry-after` 파싱·키 치환이 llm.rs 와 embedding.rs 에 중복됨(T-305 TTS 가 3번째 사본이 될 예정) → 공용 모듈로 추출하는 정리 티켓 제안(이번엔 target_files 밖이라 하지 않음).
+  - `docker-compose.yml` 의 engine environment 에 `EMBEDDING_BASE_URL` 전달이 없음(트랙 I, T-116 에 함께 반영 필요; 기본값으론 동작).
+  - 같은 워크플로를 다시 실행할 때마다 새 rag 인덱스가 생김(런 삭제 시 cascade). 오래된 인덱스 정리 정책은 없음.
+  - 청크가 1500자 단위 하드 분할되는 초대형 단일 블록은 문장 중간에서 잘릴 수 있음(명세대로).
+- **[정정, T-304]** 위 T-304 기록 중 두 가지가 사실과 다름: (1) `.env.example` 은 내가 수정하지 않았음 — 이미 트랙 I 작업(T-116)으로 `EMBEDDING_BASE_URL`·TTS 키가 반영돼 있어 편집이 적용되지 않았고(`git status` 깨끗), changed_files 에서 제외해야 함. (2) `docker-compose.yml` 의 engine environment 는 이미 `LLM_BASE_URL`·`LLM_EFFORT`·`EMBEDDING_BASE_URL` 을 전달하므로 '전달 누락' 후속 제안은 무효. 실제 변경 파일은 `.env.example` 을 제외한 나머지 목록.
+
+### [2026-11-26 14:55] [T-305] [w1-kobe] — DONE
+- **작업 내용**: ① `clients/common.rs`(재시도 루프 `retry`, `Failure`, `is_retryable_status`, `parse_retry_after`, `error_message`, `scrub_secret`) 추출 — `llm.rs`·`embedding.rs` 가 사용(동작 불변). ② `Config`(TTS_API_KEY/BASE_URL/MODEL/VOICE, Debug 키 가림) + `clients/tts.rs`(TtsClient::synthesize, `split_text`). ③ `nodes/voice.rs`(Claude 대본 → `_work/script.txt` → TTS → `mp3.mp3`), `nodes/mod.rs` 에 `select_images`/`MAX_IMAGES` 공용화(summary 가 사용) + EngineRunner 에 tts 클라이언트·`NodeKind::Voice` 디스패치.
+- **실행 명령어**: 표준 검증 체인(fmt/clippy 0, cargo test 281 통과 — tests/voice.rs 11, lib 단위(common 7, tts 10, config 추가), `prepare --check`, docker build) -> VERIFY_ALL_OK. **기존 llm_nodes(24)·rag(12) 통합 테스트는 한 줄도 수정하지 않고 통과**(리팩터 무회귀). 이동한 단위 테스트(error_message·retryable_statuses)는 common.rs 로 옮김. bindings·`.sqlx`·Cargo.toml 변경 없음, 실제 외부 API 호출 없음, compose 미사용.
+- **공용화 내용**: 재시도 정책(429·500·502·503·529·연결 오류 3회, 1s/2s/4s, `retry-after` 우선·60초 상한, 타임아웃 미재시도)과 키 치환 헬퍼를 한 곳으로. 각 클라이언트는 한 번의 HTTP 시도 함수(`send_once`)가 `Failure<E>`(`fatal`/`transport`/`http` 생성자)를 돌려주고 `retry()` 로 감쌈. 키 치환은 클라이언트별 `redact`(오류 변형별) + 공용 `scrub_secret`. 재시도 지연 테스트는 `tokio test-util` 을 추가하지 않고 실제 짧은 지연(10ms 기반 ≥70ms, retry-after 0 → <500ms)으로 검증.
+- **TTS**: `POST {base}/v1/audio/speech`, Bearer 인증, 본문 `{model, input, voice, response_format:"mp3"}`. 4000자 초과 텍스트는 `split_text`(문장 경계 — `.`/`!`/`?` 뒤가 공백·끝일 때(소수점 `3.14` 제외), `。！？`, 개행; 문장 단위 탐욕 결합, 4000자 초과 단일 문장은 하드 분할, 공백 청크 제거)로 쪼개 순차 합성 후 바이트를 순서대로 결합. 응답 Content-Type 이 `audio/*` 가 아니거나 본문이 비면 Decode 오류(재시도 안 함). 빈 텍스트는 키·호출 없이 빈 결과.
+- **voice 노드**: md 필수, images(LIST[JPG]) 는 summary 와 같은 규칙(최대 20개·개별 5MiB·요청 30MiB, 텍스트 먼저 계상, 첫 초과부터 이후 제외). 제외된 이미지는 대본에 주석을 붙이지 않고(음성으로 읽히므로) 경고 로그만 남김. 대본이 비면 Failed('해설 대본이 비어 있습니다'). 대본은 TTS 호출 전에 `_work/script.txt` 로 저장되므로 TTS 실패 시에도 남음. 시스템 프롬프트: 한국어 구어체 내레이터, 마크다운·목록·이모지 금지, 약 1500~2500자, 이미지 반영, 서문 금지.
+- **참고**: `.env.example`·`docker-compose.yml` 은 이미 TTS_* 키를 포함(트랙 I) — 이번 티켓에서 수정하지 않음. 작업 트리의 `web/**`·`CONTEXT.md`·`PLAN.md` 변경은 다른 트랙/오케스트레이터 작업물.
+- **발견 사항 / 후속**: `tts-1` 은 입력 4096자 제한 — 4000자 청크는 여유가 있으나 다른 TTS 모델(`TTS_MODEL`)을 쓰면 한도가 다를 수 있음. 청크 경계에서 MP3 를 단순 이어붙이므로 청크 사이에 미세한 무음/갭이 생길 수 있음(재인코딩 없음).
+
+### [2026-11-26 10:55] [T-406] [orch-subagent] — DONE
+- **작업 내용**: 캔버스 노드 배치 UX + 비보안 컨텍스트 ID 생성 버그 수정
+  - `web/src/lib/placement.ts`(신규, 순수): `nodeBox`(measured → width/height → 기본 260×120), `overlaps`(엄격), `contains`, `findFreePosition`(시작점에서 +40px 대각선 이동, 결정적, 최대 500회), `NODE_DRAG_MIME='application/dochestra-node'`
+  - `NodePalette.tsx`: 항목 `draggable` + onDragStart(`setData(NODE_DRAG_MIME, kind)`, `effectAllowed='move'`), `cursor-grab`, 상단 안내 "클릭하거나 캔버스로 끌어다 놓으세요". 클릭 추가는 보이는 캔버스 중앙 기준 + 겹침 회피, 화면 밖이면 `setCenter(x, y, { zoom: getZoom(), duration: 200 })` 로 줌 유지 패닝
+  - `Canvas.tsx`: 래퍼 div(`data-testid="flow-drop-zone"`)에서 onDragOver(해당 MIME 일 때만 preventDefault, dropEffect move)/onDrop(카탈로그에 없는 kind·MIME 없음 무시, `screenToFlowPosition({x: clientX, y: clientY})` 기준 노드 중심 배치). `fitViewOptions={{maxZoom: 1, padding: 0.2}}`(Controls 버튼도 동일), `minZoom={0.2}`
+  - `editorStore.addNode`: 새 노드만 `selected: true`, 나머지 해제, `selectedNodeId` 설정, id 반환(미지 kind → null)
+  - `web/src/lib/ids.ts`(신규): `newId()` — `crypto.randomUUID` 없으면 `getRandomValues` 로 v4 UUID. editorStore 의 addNode·onConnect 에서 사용(web/src 내 `crypto.randomUUID` 직접 호출 0건)
+- **원인(사용자 보고 "클릭해도 아무 일 없음")**: http://<서버 IP> 는 비보안 컨텍스트라 `crypto.randomUUID` 가 undefined → addNode 에서 TypeError. localhost 는 보안 컨텍스트라 기존 테스트에서 놓침
+- **xyflow 13 확인 사항(node_modules/@xyflow/react/dist/index.d.ts, @xyflow/system 1.0.1)**: `useReactFlow()` 의 `screenToFlowPosition(clientPos, opts?)`, `setCenter(x, y, {zoom?, duration?}) => Promise<boolean>`, `getZoom()`; `ReactFlow` props `fitView`/`fitViewOptions`(`FitViewOptions`: padding/minZoom/maxZoom/...)/`minZoom`; `Controls` `fitViewOptions`; Node `measured?: {width?, height?}`
+- **문제 및 해결**: 첫 verify 에서 드롭 E2E 실패 — 노드가 드롭 지점이 아니라 캔버스 중앙에 위치. v13 은 빈 그래프에서 요청한 초기 `fitView` 가 큐에 남아 첫 노드 추가 시 실행되어 뷰포트를 이동시킴 → 마운트 시 노드가 있을 때만 `fitView` 를 켜도록(`fitView={fitOnInit}`) 수정 후 통과
+- **테스트**: 단위 — placement(6), ids(2: randomUUID 제거 상태 1000회 v4·중복 없음), store(addNode 선택/해제, randomUUID 없이 addNode·onConnect), Canvas DnD(dragover 수락, 드롭 시 kind·위치·선택·dirty, 미지/없는 kind 무시), NodePalette(draggable·힌트·dragstart dataTransfer, 클릭 3회 겹침 없음·선택). `EditorPage.test.tsx` 422 케이스: 새 노드 자동 선택으로 Inspector 가 열려 `/api/bundles` 스텁 추가 및 alert 조회를 TYPE_MISMATCH 포함 alert 로 한정
+  - E2E 추가 4개: 실제 dragTo 드롭(드롭 지점 ±120px·selected·Inspector 제목), 클릭 3회 겹침 없음·화면 내, `addInitScript` 로 randomUUID 제거 후 클릭·드롭·연결, **실제 `http://<호스트 IPv4>:18080` 접속**(os.networkInterfaces 첫 비-loopback IPv4, `isSecureContext===false` 단언) 후 클릭·드롭·연결 + pageerror 0
+- **실행 명령어**: `cd web && pnpm install --frozen-lockfile && pnpm lint && pnpm typecheck && pnpm test --run(130) && pnpm build` 통과, `./scripts/verify-stack.sh --ui` exit 0(smoke 전부 PASS, Playwright 5 passed). 사용자 스택(dochestra) 미접촉
+- **발견 사항 / 후속 제안**: 드롭 배치는 사용자 의도 우선이라 겹침 회피를 적용하지 않음. 비보안 컨텍스트 회귀 방지 E2E 는 호스트에 비-loopback IPv4 가 없으면 skip 됨
