@@ -24,6 +24,9 @@ const LINE_HEIGHT: f32 = 1.35;
 const TITLE_RGB: (f32, f32, f32) = (229.0 / 255.0, 72.0 / 255.0, 77.0 / 255.0);
 const BODY_RGB: (f32, f32, f32) = (0.13, 0.13, 0.15);
 const MUTED_RGB: (f32, f32, f32) = (0.45, 0.45, 0.5);
+/// A picture is never enlarged beyond this factor (1 px = 1 pt at 1x): a 144 x 26 px chart blown
+/// up 4.7x to fill the closing slide was a pixelated smear (live check), so it stays smaller and centered.
+const MAX_IMAGE_UPSCALE: f32 = 2.0;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RenderError {
@@ -189,9 +192,12 @@ impl Page {
         });
     }
 
-    /// Places `image` inside the box (x, y = bottom-left), keeping its aspect ratio, centered.
+    /// Places `image` inside the box (x, y = bottom-left), keeping its aspect ratio, centered and
+    /// enlarged at most [`MAX_IMAGE_UPSCALE`] times.
     fn image(&mut self, image: &PlacedImage, x: f32, y: f32, w: f32, h: f32) {
-        let scale = (w / image.width).min(h / image.height);
+        let scale = (w / image.width)
+            .min(h / image.height)
+            .min(MAX_IMAGE_UPSCALE);
         let (draw_w, draw_h) = (image.width * scale, image.height * scale);
         self.ops.push(Op::UseXobject {
             id: image.id.clone(),

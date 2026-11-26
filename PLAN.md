@@ -33,7 +33,7 @@
 
 ## 2. 현재 활성 상태 요약
 
-- **현재 단계**: `M3 완료 → 품질 보강 / M5` (2026-11-26) — 외부 AI 7종 실 API 동작 확인(커밋 38e6449). fine: T-313(analyze 품질 보강) — T-312 완료, kobe: T-314(slide 품질 보강) — T-316 완료(3d293d2).
+- **현재 단계**: `M3 완료 → 품질 보강 / M5` (2026-11-26) — 외부 AI 7종 실 API 동작 확인(커밋 38e6449). fine: T-313(analyze 품질 보강) — T-312 완료, kobe: T-317(fill 품질 보강) — T-314 완료.
 - **호스트 변경 기록**: 2026-11-26 w2-fine 이 Playwright chromium 실행을 위해 `sudo playwright install-deps chromium`(apt 시스템 패키지) 설치. 이후 sudo 를 쓰는 호스트 변경은 사전 승인 필요(CONTEXT §6.2).
 - **운영 메모**: 08:20경 오케스트레이터 hcom 세션이 pty 종료로 끊겨 T-202·T-113 보고가 유실됨 → 재연결 후 이벤트 로그에서 복구·검수.
 - **디스크 고갈 (2026-11-26 11:2x)**: 루트 77G 중 100% 사용(361MB) → 링커 Bus error. 오케스트레이터 임시 검증 빌드(4.3G) 등 삭제로 32GB 확보. 원인: 동시 빌드(엔진 다중 target, CUDA 이미지, docker build cache 22GB). 규칙: 검증용 별도 CARGO_TARGET_DIR 금지, 빌드 전 `df -h /` 확인. T-307 검수는 T-309 와 합쳐 진행.
@@ -51,7 +51,8 @@
 ### In Progress (진행 중)
 | 티켓 ID | 마일스톤 | 상세 작업 목표 | 담당 워커 | 대상 경로 | 검증 명령어 (`verify_cmd`) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| T-314 | M3 | slide 실사용 품질 보강(긴 문서 구성 안정성·한글 렌더·텍스트 넘침·이미지 배치·구성 JSON 재시도) | w1-kobe | `engine/src/nodes/slide/**`, `engine/tests/slide.rs`, `scripts/live/slide_check.sh`(신규, 단독) | engine 표준 검증 + slide_check 실 API |
+| T-317 | M3 | fill 실사용 품질 보강(실제 양식형 폼·한글 라벨·키 표기 차이·LLM 매핑 정확도·체크박스/라디오/선택 값 변환) | w1-kobe | `engine/src/nodes/fill/**`, `engine/tests/fill.rs`, `engine/tests/fixtures/**`, `scripts/live/fill_check.sh`(신규, 단독) | engine 표준 검증 + fill_check 실 API |
+| T-313 | M3 | analyze 실사용 품질 보강(차트·표 이미지·사진·텍스트 많은 이미지·작은 이미지, 수치 판독 정확도, 한국어 구조화) | w2-fine | `engine/src/nodes/analyze.rs`, `engine/tests/llm_nodes.rs`, `scripts/live/**`(slide_check.sh 제외), `fixtures/live/**` | live-nodes --only analyze + engine 표준 검증 |
 
 ### Blocked (보류 / 설계 조정 또는 외부 확인 필요)
 | 티켓 ID | 마일스톤 | 작업 요약 | 블로커 사유 | 해소 방안 |
@@ -61,9 +62,8 @@
 ### Pending (대기 중)
 | 티켓 ID | 마일스톤 | 트랙 | 상세 작업 목표 | 선행 티켓 | 대상 경로 | 검증 조건 및 명령어 (`verify_cmd`) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| T-313 | M3 | I | analyze 실사용 품질 보강 | T-312 | `engine/src/nodes/analyze.rs` | live --only analyze |
+| T-320 | M3 | R | slide PDF 폰트 서브셋(1.5MB → 축소) | T-314 | `engine/Cargo.toml`, `engine/src/nodes/slide/render.rs` | PDF 크기·글리프 |
 | T-319 | M3 | R | rag 하이브리드 검색(키워드+벡터)·모름 답변 근거 제거 | T-315 | `engine/src/{nodes,api,db}/rag.rs` | rag_check 실패 1건 해소 |
-| T-317 | M3 | I | fill 실사용 품질 보강 | T-316 | `engine/src/nodes/fill/**` | live --only fill |
 
 ### Done (검수 완료)
 | 티켓 ID | 마일스톤 | 완료된 작업 요약 | 실행한 검증 명령어 및 결과 | 완료 일자 |
@@ -110,6 +110,7 @@
 | T-315 | M3 | rag 품질 보강: chunk_markdown 재작성(제목 결합·문장 경계 균등 분할·섹션 제목 맥락) + scripts/live/rag_check.sh | 오케스트레이터: 깨끗한 worktree 에서 fmt·clippy·test 362·prepare 통과. 실 API 리포트 확인 — handbook 강제 잘림 30→0·문장 중간 시작 29→0·제목 맥락 28→75, 사실 11/12(92%)·모름 2/2·topK 경계 4/4. 미해결: 반복 문서 설정값 질문 검색 실패 1건(하이브리드 검색 후속), 모름 답변에 근거 표기 1건 | 2026-11-26 |
 | T-316 | M3 | voice 품질 보강: 영문 상호·이름 한글 단일 표기 규칙, clean_script 안전망 + scripts/live/voice_check.sh(대본·MP3 디코딩 점검) | 오케스트레이터: 깨끗한 worktree 에서 fmt·clippy·test 369·prepare 통과. 실 API 리포트 확인 — 3문서 대본 1927~2390자·한국어·기호 0·사실 9/9·9/9·5/5, MP3 254~328s 24kHz 클리핑 0%·끝 잘림 없음. 한계: 청취 평가 불가, 다중 TTS 청크는 mock 만 | 2026-11-26 |
 | T-312 | M3 | summary 품질 보강: 한국어 출력 강제(영어 어휘·단위 번역), 길이 비율 제어, 장 소제목 유지·반복 1회, 핵심요점-섹션 중복 금지, 이미지-본문 대응 / translate 숫자 아라비아 표기 1줄 | 오케스트레이터: 깨끗한 worktree 에서 fmt·clippy·test 370·prepare 통과. 실 API(누적 유료 10회): 4시나리오 succeeded, 20쪽 요약 장 8/8 소제목·사실 5/5, 한글 문서 사실 10/10, 이미지 47장→27개 제외 주석 정확. 관찰: 장 제목은 원문(영어) 유지 | 2026-11-26 |
+| T-314 | M3 | slide 품질 보강: 대표 이미지 업스케일 상한 2.0(작은 이미지 깨짐 방지) + 비율 회귀 테스트 + scripts/live/slide_check.sh(PNG 렌더 점검) | 오케스트레이터: 깨끗한 worktree 에서 fmt·clippy·test 372·prepare 통과, 한글 슬라이드 7장 PNG 육안 확인(글리프·수치·차트 비율 정상). 관찰: 개요 슬라이드 내용 중복·희박(경미) | 2026-11-26 |
 
 ---
 

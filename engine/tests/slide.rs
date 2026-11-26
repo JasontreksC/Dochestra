@@ -102,6 +102,31 @@ fn inspect(bytes: &[u8]) -> PdfInfo {
     }
 }
 
+/// `(page number, width pt, height pt)` of every image drawn in the PDF, from the `cm` matrix that
+/// precedes each `Do` operator.
+fn image_sizes(bytes: &[u8]) -> Vec<(usize, f32, f32)> {
+    let doc = lopdf::Document::load_mem(bytes).expect("readable PDF");
+    let mut sizes = Vec::new();
+    for (number, id) in doc.get_pages() {
+        let content = doc.get_and_decode_page_content(id).expect("page content");
+        let mut matrix = None;
+        for op in &content.operations {
+            match op.operator.as_str() {
+                "cm" => {
+                    let v: Vec<f32> = op.operands.iter().map(|o| o.as_float().unwrap()).collect();
+                    matrix = Some((v[0], v[3]));
+                }
+                "Do" => {
+                    let (w, h) = matrix.expect("an image is drawn after a cm matrix");
+                    sizes.push((number as usize, w.abs(), h.abs()));
+                }
+                _ => {}
+            }
+        }
+    }
+    sizes
+}
+
 fn maybe_dump(name: &str, bytes: &[u8]) {
     if let Ok(dir) = std::env::var("SLIDE_DUMP_DIR") {
         std::fs::write(PathBuf::from(dir).join(name), bytes).unwrap();
@@ -769,4 +794,56 @@ async fn extract_pick_jpg_slide_run_produces_a_downloadable_pdf(pool: PgPool) {
     assert!(info.images >= 1 && info.font_files >= 2);
     // The extracted image reached the LLM as the representative picture.
     assert!(llm.has_image(0));
+}
+
+/// Live check finding: a 144 x 26 px picture was enlarged 4.7x on the closing slide (pixelated).
+#[test]
+fn a_tiny_picture_is_not_enlarged_beyond_twice_its_size() {
+    let deck = korean_deck(2);
+    let bytes = render::render_deck(&deck, Some(&jpeg(144, 26)), &font_dir()).unwrap();
+    let sizes = image_sizes(&bytes);
+    assert_eq!(sizes.len(), 2, "cover and closing slide: {sizes:?}");
+    for &(page, w, h) in &sizes {
+        assert!(
+            w <= 2.0 * 144.0 + 0.5 && h <= 2.0 * 26.0 + 0.5,
+            "page {page}: {w} x {h}"
+        );
+        assert!(
+            (w / h - 144.0 / 26.0).abs() < 0.05,
+            "ratio kept on page {page}: {w} x {h}"
+        );
+    }
+    // The cover shows it at its natural scale (1.4x), the closing slide at the 2x cap.
+    assert!((sizes[0].1 - 202.0).abs() < 0.5, "{sizes:?}");
+    assert!(
+        (sizes[1].1 - 288.0).abs() < 0.5 && (sizes[1].0 == 4),
+        "{sizes:?}"
+    );
+}
+
+#[test]
+fn ordinary_pictures_keep_filling_their_boxes_with_the_ratio_intact() {
+    let deck = korean_deck(2);
+    // Landscape chart: unchanged layout (cover box 202 wide, closing box 672 x 309).
+    let bytes = render::render_deck(&deck, Some(&jpeg(640, 360)), &font_dir()).unwrap();
+    let sizes = image_sizes(&bytes);
+    assert!(
+        (sizes[0].1 - 202.0).abs() < 0.5 && (sizes[1].2 - 309.0).abs() < 0.5,
+        "{sizes:?}"
+    );
+    // Tall and thin pictures: ratio kept, inside the boxes.
+    for (w, h) in [(300u32, 900u32), (867, 23)] {
+        let bytes = render::render_deck(&deck, Some(&jpeg(w, h)), &font_dir()).unwrap();
+        for (page, pw, ph) in image_sizes(&bytes) {
+            let want = w as f32 / h as f32;
+            assert!(
+                (pw / ph - want).abs() / want < 0.01,
+                "{w}x{h} page {page}: {pw} x {ph}"
+            );
+            assert!(
+                pw <= 672.5 && ph <= 309.5,
+                "{w}x{h} page {page}: {pw} x {ph}"
+            );
+        }
+    }
 }
