@@ -974,3 +974,85 @@ async fn search_is_scoped_to_one_index(pool: PgPool) {
     .await;
     assert_eq!(body["sources"].as_array().unwrap().len(), 3);
 }
+
+/// Regression for the live-check findings: long paragraphs were hard-cut at 1500 characters
+/// (mid-sentence, even mid-word) leaving tiny headless tails.
+#[sqlx::test(migrations = "./migrations")]
+async fn long_sections_are_stored_as_balanced_sentence_aligned_chunks_with_their_heading(
+    pool: PgPool,
+) {
+    let sentences: String = (0..70)
+        .map(|i| format!("Sentence {i:02} explains how the fleet controller @{i}@ plans routes. "))
+        .collect();
+    let md = format!(
+        "# Handbook\n\n## 8.4 Upgrades and Support\n\n{}\n\n## 9. Appendix\n\nShort closing remark.",
+        sentences.trim()
+    );
+    let extractor = spawn_extractor(&md).await;
+    let (embeddings, _llm) = spawn_providers(vec![], vec![]).await;
+    let h = harness(
+        pool.clone(),
+        &Urls {
+            extractor: &extractor,
+            base: &embeddings.url,
+            key: Some(KEY),
+        },
+    );
+    let bundle = upload_bundle(&h.app).await;
+    let (run_id, detail) = run_graph(&h.app, rag_graph(&bundle)).await;
+    assert_eq!(detail["status"], "succeeded", "{detail}");
+
+    let (_, bytes) = raw(
+        &h.app,
+        Request::get(format!("/api/runs/{run_id}/artifacts/r/api"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    let api: Value = serde_json::from_slice(&bytes).unwrap();
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT content FROM rag_chunks WHERE index_id = $1::uuid ORDER BY chunk_index",
+    )
+    .bind(api["indexId"].as_str().unwrap())
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let chunks: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+    assert_eq!(chunks.len() as u64, api["chunkCount"].as_u64().unwrap());
+
+    let section: Vec<&&str> = chunks
+        .iter()
+        .filter(|c| c.contains("explains how the fleet controller"))
+        .collect();
+    assert!(section.len() >= 3, "{} chunks", section.len());
+    for chunk in &section {
+        assert!(chunk.chars().count() <= 1500, "{}", chunk.chars().count());
+        let body = chunk.strip_prefix("# Handbook\n\n").unwrap_or(chunk);
+        assert!(
+            body.starts_with("## 8.4 Upgrades and Support\n\nSentence "),
+            "starts at a sentence under its heading: {:?}",
+            &chunk[..60]
+        );
+        assert!(
+            chunk.trim_end().ends_with("plans routes."),
+            "ends at a sentence: {:?}",
+            &chunk[chunk.len() - 40..]
+        );
+    }
+    let sizes: Vec<usize> = section.iter().map(|c| c.chars().count()).collect();
+    assert!(
+        sizes.iter().max().unwrap() - sizes.iter().min().unwrap() < 250,
+        "uneven pieces: {sizes:?}"
+    );
+    // Every sentence is stored exactly once.
+    for i in 0..70 {
+        let marker = format!("Sentence {i:02} ");
+        assert_eq!(
+            chunks.iter().filter(|c| c.contains(&marker)).count(),
+            1,
+            "{marker}"
+        );
+    }
+    // The next section starts its own chunk with its own heading (no stray context).
+    assert!(chunks.last().unwrap().starts_with("## 9. Appendix"));
+}
