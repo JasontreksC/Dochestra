@@ -1,4 +1,4 @@
-//! OpenAI embeddings client (CONTEXT §4.3).
+//! Embeddings client for OpenRouter's OpenAI-compatible `/embeddings` API (CONTEXT §4.3).
 
 use std::time::Duration;
 
@@ -9,8 +9,8 @@ use super::common::{
     DEFAULT_BACKOFF_BASE, Failure, error_message, parse_retry_after, retry, scrub_secret,
 };
 
-/// Embedding dimension of `rag_chunks.embedding` (`vector(1536)`).
-pub const EMBEDDING_DIMENSIONS: usize = 1536;
+/// Embedding dimension of `rag_chunks.embedding` (`vector(1024)`, migration 0003).
+pub const EMBEDDING_DIMENSIONS: usize = 1024;
 /// Maximum inputs per request.
 pub const MAX_BATCH_ITEMS: usize = 96;
 /// Maximum total characters per request.
@@ -20,7 +20,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum EmbeddingError {
-    #[error("EMBEDDING_API_KEY 가 설정되지 않았습니다")]
+    #[error("OPENROUTER_API_KEY 가 설정되지 않았습니다")]
     MissingApiKey,
     #[error("임베딩 입력이 너무 깁니다 ({chars}자, 요청당 최대 200000자)")]
     InputTooLarge { chars: usize },
@@ -83,10 +83,10 @@ impl EmbeddingClient {
         &self.model
     }
 
-    /// Embeds `texts`, returning one 1536-dimensional vector per input, in input order.
+    /// Embeds `texts`, returning one 1024-dimensional vector per input, in input order.
     ///
     /// Inputs are sent in as few requests as possible (at most 96 inputs and 200,000
-    /// characters each). 429/5xx and connection errors are retried up to 3 times.
+    /// characters each). 429/500/502/503 and connection errors are retried up to 3 times.
     pub async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
         if texts.is_empty() {
             return Ok(Vec::new());
@@ -109,11 +109,10 @@ impl EmbeddingClient {
         api_key: &str,
         batch: &[String],
     ) -> Result<Vec<Vec<f32>>, EmbeddingError> {
-        let url = format!("{}/v1/embeddings", self.base_url);
+        let url = format!("{}/embeddings", self.base_url);
         let body = json!({
             "model": self.model,
             "input": batch,
-            "encoding_format": "float",
         });
 
         let text = retry("embedding", self.backoff_base, || {
@@ -343,7 +342,7 @@ mod tests {
                 actual: 3
             }
             .to_string(),
-            "임베딩 차원이 3 입니다 (기대 1536)"
+            "임베딩 차원이 3 입니다 (기대 1024)"
         );
     }
 
@@ -356,7 +355,7 @@ mod tests {
         assert_eq!(error_message("gateway down"), "gateway down");
         assert_eq!(
             EmbeddingError::MissingApiKey.to_string(),
-            "EMBEDDING_API_KEY 가 설정되지 않았습니다"
+            "OPENROUTER_API_KEY 가 설정되지 않았습니다"
         );
         let client = EmbeddingClient::new(
             reqwest::Client::new(),

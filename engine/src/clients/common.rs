@@ -45,7 +45,7 @@ impl<E> Failure<E> {
         }
     }
 
-    /// A non-success HTTP answer: 429/500/502/503/529 are retried, honouring `retry-after`.
+    /// A non-success HTTP answer: 429/500/502/503 are retried, honouring `retry-after`.
     pub fn http(error: E, status: StatusCode, retry_after: Option<Duration>) -> Self {
         Self {
             error,
@@ -86,7 +86,7 @@ where
 }
 
 pub fn is_retryable_status(status: StatusCode) -> bool {
-    matches!(status.as_u16(), 429 | 500 | 502 | 503 | 529)
+    matches!(status.as_u16(), 429 | 500 | 502 | 503)
 }
 
 /// `retry-after` (seconds) of a response, capped at 60 seconds.
@@ -105,7 +105,7 @@ pub fn parse_retry_after(response: &reqwest::Response) -> Option<Duration> {
     Some(Duration::from_secs_f64(seconds).min(MAX_RETRY_AFTER))
 }
 
-/// `error.message` of an API error body (Anthropic and OpenAI share this shape), else the first
+/// `error.message` of an API error body (OpenAI-compatible APIs share this shape), else the first
 /// 300 characters of the body.
 pub fn error_message(body: &str) -> String {
     serde_json::from_str::<Value>(body)
@@ -144,13 +144,13 @@ mod tests {
 
     #[test]
     fn retryable_statuses() {
-        for code in [429, 500, 502, 503, 529] {
+        for code in [429, 500, 502, 503] {
             assert!(
                 is_retryable_status(StatusCode::from_u16(code).unwrap()),
                 "{code}"
             );
         }
-        for code in [400, 401, 403, 404, 413, 422] {
+        for code in [400, 401, 403, 404, 413, 422, 529] {
             assert!(
                 !is_retryable_status(StatusCode::from_u16(code).unwrap()),
                 "{code}"

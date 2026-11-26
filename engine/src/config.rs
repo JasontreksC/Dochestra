@@ -9,15 +9,13 @@ const DEFAULT_DATA_DIR: &str = "/data";
 const DEFAULT_BIND: &str = "0.0.0.0:8080";
 const DEFAULT_HEALTH_TIMEOUT_SECS: u64 = 600;
 const DEFAULT_EXTRACTOR_TIMEOUT_SECS: u64 = 900;
-const DEFAULT_LLM_BASE_URL: &str = "https://api.anthropic.com";
-const DEFAULT_LLM_MODEL: &str = "claude-opus-5-5";
-const DEFAULT_LLM_EFFORT: &str = "high";
-const LLM_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
-const DEFAULT_EMBEDDING_BASE_URL: &str = "https://api.openai.com";
-const DEFAULT_EMBEDDING_MODEL: &str = "text-embedding-3-small";
-const DEFAULT_TTS_BASE_URL: &str = "https://api.openai.com";
-const DEFAULT_TTS_MODEL: &str = "tts-1";
-const DEFAULT_TTS_VOICE: &str = "alloy";
+const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
+const DEFAULT_LLM_MODEL: &str = "meta/muse-ember";
+const DEFAULT_LLM_EFFORT: &str = "medium";
+const LLM_EFFORTS: [&str; 3] = ["low", "medium", "high"];
+const DEFAULT_EMBEDDING_MODEL: &str = "baai/bge-m3";
+const DEFAULT_TTS_MODEL: &str = "google/gemini-3.8-flash-lite-tts";
+const DEFAULT_TTS_VOICE: &str = "Kore";
 /// Where the container image keeps the slide fonts.
 const CONTAINER_FONT_DIR: &str = "/usr/local/share/dochestra/fonts";
 const DEFAULT_UPLOAD_LIMIT_BYTES: usize = 200 * 1024 * 1024;
@@ -46,19 +44,15 @@ pub struct Config {
     pub extractor_timeout: Duration,
     /// Maximum request size of a bundle upload (`UPLOAD_LIMIT_BYTES`).
     pub upload_limit_bytes: usize,
-    /// Anthropic API key (`LLM_API_KEY`); `None` makes LLM nodes fail, the engine still starts.
-    pub llm_api_key: Option<String>,
-    pub llm_base_url: String,
+    /// OpenRouter API key (`OPENROUTER_API_KEY`), shared by the LLM, embedding and TTS calls.
+    /// `None` makes those nodes fail; the engine still starts.
+    pub openrouter_api_key: Option<String>,
+    /// OpenRouter base URL including the version path (`OPENROUTER_BASE_URL`).
+    pub openrouter_base_url: String,
     pub llm_model: String,
-    /// `low | medium | high | xhigh | max` (`LLM_EFFORT`).
+    /// `low | medium | high` (`LLM_EFFORT`).
     pub llm_effort: String,
-    /// OpenAI API key for embeddings (`EMBEDDING_API_KEY`); `None` makes the rag node fail.
-    pub embedding_api_key: Option<String>,
-    pub embedding_base_url: String,
     pub embedding_model: String,
-    /// OpenAI API key for text-to-speech (`TTS_API_KEY`); `None` makes the voice node fail.
-    pub tts_api_key: Option<String>,
-    pub tts_base_url: String,
     pub tts_model: String,
     pub tts_voice: String,
     /// Directory with the slide fonts (`SLIDE_FONT_DIR`).
@@ -78,23 +72,13 @@ impl std::fmt::Debug for Config {
             .field("extractor_timeout", &self.extractor_timeout)
             .field("upload_limit_bytes", &self.upload_limit_bytes)
             .field(
-                "llm_api_key",
-                &self.llm_api_key.as_ref().map(|_| "<redacted>"),
+                "openrouter_api_key",
+                &self.openrouter_api_key.as_ref().map(|_| "<redacted>"),
             )
-            .field("llm_base_url", &self.llm_base_url)
+            .field("openrouter_base_url", &self.openrouter_base_url)
             .field("llm_model", &self.llm_model)
             .field("llm_effort", &self.llm_effort)
-            .field(
-                "embedding_api_key",
-                &self.embedding_api_key.as_ref().map(|_| "<redacted>"),
-            )
-            .field("embedding_base_url", &self.embedding_base_url)
             .field("embedding_model", &self.embedding_model)
-            .field(
-                "tts_api_key",
-                &self.tts_api_key.as_ref().map(|_| "<redacted>"),
-            )
-            .field("tts_base_url", &self.tts_base_url)
             .field("tts_model", &self.tts_model)
             .field("tts_voice", &self.tts_voice)
             .field("slide_font_dir", &self.slide_font_dir)
@@ -177,9 +161,9 @@ impl Config {
                 })?,
         };
 
-        let llm_api_key = get("LLM_API_KEY").map(|k| k.trim().to_owned());
-        let llm_base_url = get("LLM_BASE_URL")
-            .unwrap_or_else(|| DEFAULT_LLM_BASE_URL.to_owned())
+        let openrouter_api_key = get("OPENROUTER_API_KEY").map(|k| k.trim().to_owned());
+        let openrouter_base_url = get("OPENROUTER_BASE_URL")
+            .unwrap_or_else(|| DEFAULT_OPENROUTER_BASE_URL.to_owned())
             .trim_end_matches('/')
             .to_owned();
         let llm_model = get("LLM_MODEL").unwrap_or_else(|| DEFAULT_LLM_MODEL.to_owned());
@@ -197,20 +181,8 @@ impl Config {
                 effort
             }
         };
-
-        let embedding_api_key = get("EMBEDDING_API_KEY").map(|k| k.trim().to_owned());
-        let embedding_base_url = get("EMBEDDING_BASE_URL")
-            .unwrap_or_else(|| DEFAULT_EMBEDDING_BASE_URL.to_owned())
-            .trim_end_matches('/')
-            .to_owned();
         let embedding_model =
             get("EMBEDDING_MODEL").unwrap_or_else(|| DEFAULT_EMBEDDING_MODEL.to_owned());
-
-        let tts_api_key = get("TTS_API_KEY").map(|k| k.trim().to_owned());
-        let tts_base_url = get("TTS_BASE_URL")
-            .unwrap_or_else(|| DEFAULT_TTS_BASE_URL.to_owned())
-            .trim_end_matches('/')
-            .to_owned();
         let tts_model = get("TTS_MODEL").unwrap_or_else(|| DEFAULT_TTS_MODEL.to_owned());
         let tts_voice = get("TTS_VOICE").unwrap_or_else(|| DEFAULT_TTS_VOICE.to_owned());
 
@@ -227,15 +199,11 @@ impl Config {
             extractor_health_timeout: Duration::from_secs(timeout_secs),
             extractor_timeout: Duration::from_secs(extractor_timeout_secs),
             upload_limit_bytes,
-            llm_api_key,
-            llm_base_url,
+            openrouter_api_key,
+            openrouter_base_url,
             llm_model,
             llm_effort,
-            embedding_api_key,
-            embedding_base_url,
             embedding_model,
-            tts_api_key,
-            tts_base_url,
             tts_model,
             tts_voice,
             slide_font_dir,
@@ -287,17 +255,82 @@ mod tests {
         assert_eq!(cfg.extractor_health_timeout, Duration::from_secs(600));
         assert_eq!(cfg.upload_limit_bytes, 200 * 1024 * 1024);
         assert_eq!(cfg.extractor_timeout, Duration::from_secs(900));
-        assert_eq!(cfg.llm_api_key, None);
-        assert_eq!(cfg.llm_base_url, "https://api.anthropic.com");
-        assert_eq!(cfg.llm_model, "claude-opus-5-5");
+        assert_eq!(cfg.openrouter_api_key, None);
+        assert_eq!(cfg.openrouter_base_url, "https://openrouter.ai/api/v1");
+        assert_eq!(cfg.llm_model, "meta/muse-ember");
+        assert_eq!(cfg.llm_effort, "medium");
+        assert_eq!(cfg.embedding_model, "baai/bge-m3");
+        assert_eq!(cfg.tts_model, "google/gemini-3.8-flash-lite-tts");
+        assert_eq!(cfg.tts_voice, "Kore");
+    }
+
+    #[test]
+    fn openrouter_settings_are_parsed_and_validated() {
+        let cfg = Config::from_lookup(lookup(&[
+            ("DATABASE_URL", "postgres://x"),
+            ("OPENROUTER_API_KEY", " sk-or-test "),
+            ("OPENROUTER_BASE_URL", "http://localhost:9999/v1/"),
+            ("LLM_MODEL", "some/model"),
+            ("LLM_EFFORT", "HIGH"),
+            ("EMBEDDING_MODEL", "some/embedder"),
+            ("TTS_MODEL", "some/tts"),
+            ("TTS_VOICE", "Puck"),
+        ]))
+        .unwrap();
+        assert_eq!(cfg.openrouter_api_key.as_deref(), Some("sk-or-test"));
+        assert_eq!(cfg.openrouter_base_url, "http://localhost:9999/v1");
+        assert_eq!(cfg.llm_model, "some/model");
         assert_eq!(cfg.llm_effort, "high");
-        assert_eq!(cfg.embedding_api_key, None);
-        assert_eq!(cfg.embedding_base_url, "https://api.openai.com");
-        assert_eq!(cfg.embedding_model, "text-embedding-3-small");
-        assert_eq!(cfg.tts_api_key, None);
-        assert_eq!(cfg.tts_base_url, "https://api.openai.com");
-        assert_eq!(cfg.tts_model, "tts-1");
-        assert_eq!(cfg.tts_voice, "alloy");
+        assert_eq!(cfg.embedding_model, "some/embedder");
+        assert_eq!(
+            (cfg.tts_model.as_str(), cfg.tts_voice.as_str()),
+            ("some/tts", "Puck")
+        );
+
+        // Empty values mean "unset".
+        let cfg = Config::from_lookup(lookup(&[
+            ("DATABASE_URL", "postgres://x"),
+            ("OPENROUTER_API_KEY", ""),
+            ("LLM_MODEL", ""),
+            ("LLM_EFFORT", "  "),
+        ]))
+        .unwrap();
+        assert_eq!(cfg.openrouter_api_key, None);
+        assert_eq!(cfg.llm_model, "meta/muse-ember");
+        assert_eq!(cfg.llm_effort, "medium");
+
+        // Only low | medium | high are accepted.
+        for bad in ["turbo", "xhigh", "max"] {
+            let err = Config::from_lookup(lookup(&[
+                ("DATABASE_URL", "postgres://x"),
+                ("LLM_EFFORT", bad),
+            ]))
+            .unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    ConfigError::Invalid {
+                        key: "LLM_EFFORT",
+                        ..
+                    }
+                ),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_retired_provider_keys_are_ignored() {
+        let cfg = Config::from_lookup(lookup(&[
+            ("DATABASE_URL", "postgres://x"),
+            ("LLM_API_KEY", "old"),
+            ("LLM_BASE_URL", "http://old"),
+            ("EMBEDDING_API_KEY", "old"),
+            ("TTS_API_KEY", "old"),
+        ]))
+        .unwrap();
+        assert_eq!(cfg.openrouter_api_key, None);
+        assert_eq!(cfg.openrouter_base_url, "https://openrouter.ai/api/v1");
     }
 
     #[test]
@@ -317,84 +350,10 @@ mod tests {
     }
 
     #[test]
-    fn tts_settings_are_parsed() {
-        let cfg = Config::from_lookup(lookup(&[
-            ("DATABASE_URL", "postgres://x"),
-            ("TTS_API_KEY", " sk-tts "),
-            ("TTS_BASE_URL", "http://localhost:4321/"),
-            ("TTS_MODEL", "gpt-4o-mini-tts"),
-            ("TTS_VOICE", "nova"),
-        ]))
-        .unwrap();
-        assert_eq!(cfg.tts_api_key.as_deref(), Some("sk-tts"));
-        assert_eq!(cfg.tts_base_url, "http://localhost:4321");
-        assert_eq!(cfg.tts_model, "gpt-4o-mini-tts");
-        assert_eq!(cfg.tts_voice, "nova");
-        assert!(!format!("{cfg:?}").contains("sk-tts"));
-    }
-
-    #[test]
-    fn embedding_settings_are_parsed() {
-        let cfg = Config::from_lookup(lookup(&[
-            ("DATABASE_URL", "postgres://x"),
-            ("EMBEDDING_API_KEY", " sk-emb "),
-            ("EMBEDDING_BASE_URL", "http://localhost:1234/"),
-            ("EMBEDDING_MODEL", "text-embedding-3-large"),
-        ]))
-        .unwrap();
-        assert_eq!(cfg.embedding_api_key.as_deref(), Some("sk-emb"));
-        assert_eq!(cfg.embedding_base_url, "http://localhost:1234");
-        assert_eq!(cfg.embedding_model, "text-embedding-3-large");
-        let shown = format!("{cfg:?}");
-        assert!(!shown.contains("sk-emb"), "{shown}");
-    }
-
-    #[test]
-    fn llm_settings_are_parsed_and_validated() {
-        let cfg = Config::from_lookup(lookup(&[
-            ("DATABASE_URL", "postgres://x"),
-            ("LLM_API_KEY", " sk-test "),
-            ("LLM_BASE_URL", "http://localhost:9999/"),
-            ("LLM_MODEL", "claude-sonnet-5-5"),
-            ("LLM_EFFORT", "XHigh"),
-        ]))
-        .unwrap();
-        assert_eq!(cfg.llm_api_key.as_deref(), Some("sk-test"));
-        assert_eq!(cfg.llm_base_url, "http://localhost:9999");
-        assert_eq!(cfg.llm_model, "claude-sonnet-5-5");
-        assert_eq!(cfg.llm_effort, "xhigh");
-
-        // Empty values mean "unset".
-        let cfg = Config::from_lookup(lookup(&[
-            ("DATABASE_URL", "postgres://x"),
-            ("LLM_API_KEY", ""),
-            ("LLM_MODEL", ""),
-            ("LLM_EFFORT", "  "),
-        ]))
-        .unwrap();
-        assert_eq!(cfg.llm_api_key, None);
-        assert_eq!(cfg.llm_model, "claude-opus-5-5");
-        assert_eq!(cfg.llm_effort, "high");
-
-        let err = Config::from_lookup(lookup(&[
-            ("DATABASE_URL", "postgres://x"),
-            ("LLM_EFFORT", "turbo"),
-        ]))
-        .unwrap_err();
-        assert!(matches!(
-            err,
-            ConfigError::Invalid {
-                key: "LLM_EFFORT",
-                ..
-            }
-        ));
-    }
-
-    #[test]
     fn debug_output_never_contains_secrets() {
         let cfg = Config::from_lookup(lookup(&[
             ("DATABASE_URL", "postgres://user:hunter2@db/x"),
-            ("LLM_API_KEY", "sk-very-secret"),
+            ("OPENROUTER_API_KEY", "sk-very-secret"),
         ]))
         .unwrap();
         let shown = format!("{cfg:?}");

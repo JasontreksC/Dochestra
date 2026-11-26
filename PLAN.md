@@ -22,7 +22,7 @@
   - 완료 기준: `docker compose up -d --build --wait` 후 4개 컨테이너 healthy, `curl -fsS localhost/api/health` → `{"status":"ok"}`, extractor `/extract`가 샘플 PDF에서 MD/JSON/CSV/JPG 생성.
 - [x] **M2 — 코어 엔진 (타입·DB·검증·실행기·API)** (2026-11-26 완료): 공유 타입/카탈로그/ts-rs, 워크플로 CRUD, 그래프 검증, Kahn 병렬 실행기, 런·SSE API, 번들 업로드·아티팩트 다운로드.
   - 완료 기준: 가짜 노드 러너로 병렬·실패 전파 테스트 통과, 실제 HTTP로 워크플로 저장→실행→SSE 수신 통합 테스트 통과.
-- [ ] **M3 — 노드 구현 및 외부 연동**: 어댑터·소스 노드, extract(extractor 연동), LLM 계열(translate/analyze/summary), rag, voice, slide, fill.
+- [x] **M3 — 노드 구현 및 외부 연동** (2026-11-26 — 12종 전부 실 API 로 동작 확인): 어댑터·소스 노드, extract(extractor 연동), LLM 계열(translate/analyze/summary), rag, voice, slide, fill.
   - 진입 조건: CONTEXT.md D-2/D-3/D-4/D-6 사용자 확정.
   - 완료 기준: 노드별 단위 테스트(외부 API는 mock 서버) + 실제 키로 1회 수동 스모크.
 - [x] **M4 — 프론트엔드 에디터** (2026-11-26 완료, 브라우저 수동 확인은 M5): 랜딩, 사이드바, 캔버스(타입별 소켓·엣지 색상, 연결 검증), 파라미터 편집, 저장, 실행·SSE 상태 표시, 산출물 보기.
@@ -33,7 +33,7 @@
 
 ## 2. 현재 활성 상태 요약
 
-- **현재 단계**: `M3 마무리 / M5 진행` (2026-11-26) — 트랙 R은 T-307(fill) → T-309(OpenRouter 전환, 예약), 트랙 I는 T-502(README). fine hcom 재접속 완료.
+- **현재 단계**: `M3 실 API 완성 단계` (2026-11-26) — 트랙 R(kobe) T-309 OpenRouter 전환(+T-307 동반 검수), 트랙 I(fine) T-310 실 API 검증 도구 → T-311~T-317 노드별 완성(사용자 지시: 남는 워커가 하나씩).
 - **호스트 변경 기록**: 2026-11-26 w2-fine 이 Playwright chromium 실행을 위해 `sudo playwright install-deps chromium`(apt 시스템 패키지) 설치. 이후 sudo 를 쓰는 호스트 변경은 사전 승인 필요(CONTEXT §6.2).
 - **운영 메모**: 08:20경 오케스트레이터 hcom 세션이 pty 종료로 끊겨 T-202·T-113 보고가 유실됨 → 재연결 후 이벤트 로그에서 복구·검수.
 - **디스크 고갈 (2026-11-26 11:2x)**: 루트 77G 중 100% 사용(361MB) → 링커 Bus error. 오케스트레이터 임시 검증 빌드(4.3G) 등 삭제로 32GB 확보. 원인: 동시 빌드(엔진 다중 target, CUDA 이미지, docker build cache 22GB). 규칙: 검증용 별도 CARGO_TARGET_DIR 금지, 빌드 전 `df -h /` 확인. T-307 검수는 T-309 와 합쳐 진행.
@@ -51,7 +51,6 @@
 ### In Progress (진행 중)
 | 티켓 ID | 마일스톤 | 상세 작업 목표 | 담당 워커 | 대상 경로 | 검증 명령어 (`verify_cmd`) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| T-307 | M3 | fill 노드: AcroForm 필드 인식 → 키 매칭(정확/정규화 → 남은 키는 Claude 매핑) → 값 채움(텍스트·체크박스·선택) → PDF + 리포트 | w1-kobe | `engine/src/nodes/{mod,fill}.rs`(필요 시 fill/ 하위), `engine/Cargo.{toml,lock}`, `engine/tests/{fill.rs,fixtures/**}` | engine 표준 검증 + 채워진 PDF 필드값 검사 |
 
 ### Blocked (보류 / 설계 조정 또는 외부 확인 필요)
 | 티켓 ID | 마일스톤 | 작업 요약 | 블로커 사유 | 해소 방안 |
@@ -61,7 +60,13 @@
 ### Pending (대기 중)
 | 티켓 ID | 마일스톤 | 트랙 | 상세 작업 목표 | 선행 티켓 | 대상 경로 | 검증 조건 및 명령어 (`verify_cmd`) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| T-309 | M3 | R | **[사용자 결정]** 외부 AI 를 OpenRouter 로 전환: OpenAI 호환 LLM 클라이언트(chat/completions·이미지·reasoning), 임베딩 1024차원(0003 마이그레이션), TTS pcm 수신→MP3 인코딩, env·compose·.env.example 갱신 | T-307 | `engine/src/{clients/**,nodes/{voice,rag,...}.rs,config.rs}`, `engine/migrations/0003_*.sql`, `engine/Cargo.*`, `docker-compose.yml`, `.env.example`, 테스트 | engine 표준 검증 + 실 OpenRouter 스모크(오케스트레이터) |
+| T-311 | M3 | I | translate 실 API 완성(품질 점검·프롬프트/청킹 보완·회귀 테스트) | T-309, T-310 | `engine/src/nodes/translate.rs` 외 | live-nodes.sh --only translate |
+| T-312 | M3 | I | summary 실 API 완성 | T-311 | `engine/src/nodes/summary.rs` | live --only summary |
+| T-313 | M3 | I | analyze 실 API 완성(이미지 입력) | T-312 | `engine/src/nodes/analyze.rs` | live --only analyze |
+| T-314 | M3 | I | slide 실 API 완성(구성 JSON 안정성·렌더 품질) | T-313 | `engine/src/nodes/slide/**` | live --only slide |
+| T-315 | M3 | I | rag 실 API 완성(임베딩 1024·질의 응답 품질) | T-314 | `engine/src/{nodes/rag.rs,api/rag.rs}` | live --only rag |
+| T-316 | M3 | I | voice 실 API 완성(대본·TTS pcm→MP3 품질) | T-315 | `engine/src/nodes/voice.rs`, `clients/tts.rs` | live --only voice |
+| T-317 | M3 | I | fill 실 API 완성(LLM 키 매핑) | T-316 | `engine/src/nodes/fill/**` | live --only fill |
 
 ### Done (검수 완료)
 | 티켓 ID | 마일스톤 | 완료된 작업 요약 | 실행한 검증 명령어 및 결과 | 완료 일자 |
@@ -100,6 +105,9 @@
 | T-502 | M5 | README(소개·아키텍처·빠른 시작·환경 변수(OpenRouter)·사용법·노드 표·검증·문서 지도·제약) | 오케스트레이터: 상대 링크 전부 존재, env 표 CONTEXT §6.1 개정본 일치 확인. 번들 업로드 절차(4번)는 T-407 반영 시 갱신 | 2026-11-26 |
 | T-407 | M4(보수) | 번들 노드 'PDF 업로드' 버튼·드롭존(번들 자동 생성·선택), 미선택 안내 문구, README 4번 갱신 | 오케스트레이터 재실행: web test 139·lint·typecheck·build 통과. 사용자 스택 web 재배포 후 http://<서버IP> 에서 버튼 노출·업로드·번들 자동 생성·파일 목록 확인, 에러 0 | 2026-11-26 |
 | T-117 | M1(보수) | extractor Docling GPU(CUDA 13.4 torch, AcceleratorOptions, EXTRACTOR_DEVICE auto/cuda/cpu, /health device, compose GPU 예약) | 오케스트레이터: ruff·pytest 31(실 GPU 변환)·컨테이너 cuda(Tesla T4) 확인, 사용자 스택 extractor 재배포 → health device=cuda, smoke PASS. 측정(서브에이전트): 20쪽 PDF CPU 88s → GPU 11s(7.8배). 이미지 21.6GB(uv 캐시 6GB 잔존) — 축소는 T-118 | 2026-11-26 |
+| T-307 | M3 | fill 노드(AcroForm 인식·정확/정규화/LLM 매핑·UTF-16 한글·체크박스/라디오/선택·NeedAppearances·리포트) | T-309 와 합동 검수: cargo test 347 통과. 실 OpenRouter(T-310): 키 표기가 다른 JSON 으로 6개 필드 전부 채움(PDFium 렌더 육안 확인) | 2026-11-26 |
+| T-309 | M3 | 외부 AI OpenRouter 전환(OpenAI 호환 LLM·임베딩 1024(0003)·TTS pcm→MP3(LAME)), env·compose·.env.example | 오케스트레이터 엄격 검증(pipefail): fmt·clippy·test 347·prepare --check·docker build·Anthropic 잔존 0·compose 7키. 사용자 스택 engine 재배포(마이그레이션 적용, 키·모델 주입 확인)·smoke PASS | 2026-11-26 |
+| T-310 | M3 | 실 API 검증 도구 `scripts/live-nodes.sh`(LIVE_CONFIRM 게이트, --with-verify-stack, SUMMARY.md) + 픽스처(영/한 보고서) | 실 OpenRouter 로 7개 노드 전부 succeeded: translate 10.2s·summary 6.8s·analyze 4.6s·slide 6.7s(8쪽)·rag 2.5s(질의 2/2 정답)·voice 39.4s(MP3 1.9MB)·fill 1.4s. 오케스트레이터가 산출물 직접 검토(번역·요약·차트 수치·슬라이드 렌더·폼 채움) | 2026-11-26 |
 
 ---
 

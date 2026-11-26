@@ -273,35 +273,6 @@ async fn pick_out_of_range_fails_the_node(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn unimplemented_kinds_still_fail_while_upstream_succeeds(pool: PgPool) {
-    let h = harness(pool);
-    let bundle = bundle_with(&h.app, &[("a.pdf", pdf_bytes("a"))]).await;
-    let graph = json!({
-        "nodes": [
-            node("b", "bundle", json!({"bundleId": bundle}), false),
-            node("p", "pick_pdf", json!({"index": 0}), false),
-            node("j", "json_input", json!({"value": {"name": "x"}}), false),
-            node("f", "fill", json!({}), true)
-        ],
-        "edges": [
-            edge("e1", "b", "files", "p", "files"),
-            edge("e2", "p", "pdf", "f", "pdf"),
-            edge("e3", "j", "json", "f", "values")
-        ]
-    });
-    let (_, detail) = run_graph(&h.app, graph).await;
-    assert_eq!(detail["status"], "failed");
-    for id in ["b", "p", "j"] {
-        assert_eq!(node_of(&detail, id)["status"], "succeeded", "{id}");
-    }
-    assert_eq!(node_of(&detail, "f")["status"], "failed");
-    assert_eq!(
-        node_of(&detail, "f")["error"],
-        "노드 'fill' 는 아직 구현되지 않았습니다"
-    );
-}
-
-#[sqlx::test(migrations = "./migrations")]
 async fn bundle_node_reports_missing_bundle_and_empty_bundle(pool: PgPool) {
     let h = harness(pool);
     let ghost = Uuid::new_v4();

@@ -56,16 +56,12 @@ services:
       RUST_LOG: ${RUST_LOG:-info}
       EXTRACTOR_HEALTH_REQUIRED: "true"
       EXTRACTOR_HEALTH_TIMEOUT_SECS: ${EXTRACTOR_HEALTH_TIMEOUT_SECS:-600}
-      # [D-6] external provider keys (pass-through, unused until M3)
-      LLM_API_KEY: ${LLM_API_KEY:-}
-      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      # [D-6] every external AI call goes through OpenRouter (pass-through, empty = engine default)
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-}
       LLM_MODEL: ${LLM_MODEL:-}
       LLM_EFFORT: ${LLM_EFFORT:-}
-      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
-      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
-      TTS_API_KEY: ${TTS_API_KEY:-}
-      TTS_BASE_URL: ${TTS_BASE_URL:-}
       TTS_MODEL: ${TTS_MODEL:-}
       TTS_VOICE: ${TTS_VOICE:-}
     volumes:

@@ -15,3 +15,6 @@ extractor/.models/
 # editor swap files (may contain secrets from .env)
 *.swp
 .*.swp
+
+# live node checks output
+live-results/

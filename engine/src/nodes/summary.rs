@@ -1,4 +1,4 @@
-//! `summary` node: summarizes Markdown (plus optional images) with Claude.
+//! `summary` node: summarizes Markdown (plus optional images) with the LLM.
 
 use std::path::PathBuf;
 

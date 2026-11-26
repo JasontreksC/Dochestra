@@ -1,4 +1,4 @@
-//! `translate` node: translates Markdown chunk by chunk with Claude.
+//! `translate` node: translates Markdown chunk by chunk with the LLM.
 
 use std::collections::BTreeMap;
 

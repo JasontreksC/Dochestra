@@ -34,14 +34,14 @@ impl AppState {
     ) -> Self {
         let embedder = EmbeddingClient::new(
             http.clone(),
-            config.embedding_base_url.clone(),
-            config.embedding_api_key.clone(),
+            config.openrouter_base_url.clone(),
+            config.openrouter_api_key.clone(),
             config.embedding_model.clone(),
         );
         let llm = LlmClient::new(
             http.clone(),
-            config.llm_base_url.clone(),
-            config.llm_api_key.clone(),
+            config.openrouter_base_url.clone(),
+            config.openrouter_api_key.clone(),
             config.llm_model.clone(),
             config.llm_effort.clone(),
         );

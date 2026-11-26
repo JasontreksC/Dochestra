@@ -230,7 +230,7 @@ struct Reply {
 fn text_reply(text: &str) -> Reply {
     Reply {
         status: 200,
-        body: json!({"content": [{"type": "text", "text": text}], "stop_reason": "end_turn"}),
+        body: json!({"choices": [{"message": {"role": "assistant", "content": text}, "finish_reason": "stop"}]}),
     }
 }
 
@@ -265,13 +265,13 @@ impl MockLlm {
         self.shared.requests.lock().unwrap()[i].body.clone()
     }
     fn blocks(&self, i: usize) -> Vec<Value> {
-        self.body(i)["messages"][0]["content"]
+        self.body(i)["messages"][1]["content"]
             .as_array()
             .unwrap()
             .clone()
     }
     fn has_image(&self, i: usize) -> bool {
-        self.blocks(i).iter().any(|b| b["type"] == "image")
+        self.blocks(i).iter().any(|b| b["type"] == "image_url")
     }
     fn user_text(&self, i: usize) -> String {
         self.blocks(i)
@@ -314,7 +314,7 @@ async fn spawn_llm(scripted: Vec<Reply>) -> MockLlm {
             .into_response()
     }
     let app = Router::new()
-        .route("/v1/messages", post(handler))
+        .route("/chat/completions", post(handler))
         .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024))
         .with_state(shared.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -330,8 +330,8 @@ fn llm_client(url: &str, key: Option<&str>) -> LlmClient {
         reqwest::Client::new(),
         url,
         key.map(str::to_owned),
-        "claude-opus-5-5",
-        "high",
+        "meta/muse-ember",
+        "medium",
     )
     .with_backoff_base(Duration::from_millis(5))
 }
@@ -435,9 +435,9 @@ async fn node_renders_the_llm_outline_into_a_pdf() {
 
     // Request: image block first, JSON-only system prompt, whole document in the prompt.
     assert_eq!(mock.count(), 1);
-    assert_eq!(mock.blocks(0)[0]["type"], "image");
+    assert_eq!(mock.blocks(0)[0]["type"], "image_url");
     assert!(
-        mock.body(0)["system"]
+        mock.body(0)["messages"][0]["content"]
             .as_str()
             .unwrap()
             .contains("ONLY one JSON object")
@@ -550,7 +550,7 @@ async fn llm_and_font_failures_are_reported() {
         env.run(&llm_client(&mock.url, None), &env.inputs(None))
             .await,
     );
-    assert_eq!(message, "LLM_API_KEY 가 설정되지 않았습니다");
+    assert_eq!(message, "OPENROUTER_API_KEY 가 설정되지 않았습니다");
 
     let message = failed(
         slide::run(
@@ -605,8 +605,8 @@ fn harness(pool: PgPool, extractor: &str, llm: &str) -> Harness {
         ("DATABASE_URL", "unused".to_owned()),
         ("DATA_DIR", data.to_string_lossy().into_owned()),
         ("EXTRACTOR_URL", extractor.to_owned()),
-        ("LLM_BASE_URL", llm.to_owned()),
-        ("LLM_API_KEY", KEY.to_owned()),
+        ("OPENROUTER_BASE_URL", llm.to_owned()),
+        ("OPENROUTER_API_KEY", KEY.to_owned()),
         ("SLIDE_FONT_DIR", font_dir().to_string_lossy().into_owned()),
     ]);
     let config = Config::from_lookup(move |k| env.get(k).cloned()).unwrap();

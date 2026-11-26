@@ -1,5 +1,5 @@
-//! `voice` node: writes a spoken narration script for a document with Claude, then
-//! synthesizes it to MP3 with OpenAI TTS.
+//! `voice` node: writes a spoken narration script for a document with the LLM, then
+//! synthesizes it to MP3 with the TTS model.
 
 use std::path::PathBuf;
 

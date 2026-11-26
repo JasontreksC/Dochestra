@@ -20,9 +20,8 @@ use sqlx::PgPool;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-const EMBED_KEY: &str = "sk-embed-secret-1";
-const LLM_KEY: &str = "sk-llm-secret-2";
-const DIMS: usize = 1536;
+const KEY: &str = "sk-or-secret-1";
+const DIMS: usize = 1024;
 
 // ------------------------------------------------------------------ generic mock server
 
@@ -66,21 +65,56 @@ impl Mock {
     }
 }
 
-async fn spawn(path: &'static str, scripted: Vec<Reply>, default: fn(&Value) -> Reply) -> Mock {
-    let shared = Shared {
+fn new_shared(scripted: Vec<Reply>, default: fn(&Value) -> Reply) -> Shared {
+    Shared {
         replies: Arc::new(Mutex::new(scripted.into())),
         requests: Arc::new(Mutex::new(Vec::new())),
         default,
-    };
-    let app = Router::new()
-        .route(path, post(handler))
-        .with_state(shared.clone());
+    }
+}
+
+/// One server answering several endpoints (OpenRouter serves them all under one base URL); the
+/// returned mocks share the URL and each records only its own endpoint's requests.
+/// `(path, scripted replies, default answer)` of one endpoint.
+type Route = (&'static str, Vec<Reply>, fn(&Value) -> Reply);
+
+async fn spawn_routes(routes: Vec<Route>) -> Vec<Mock> {
+    let mut app = Router::new();
+    let mut shares = Vec::new();
+    for (path, scripted, default) in routes {
+        let shared = new_shared(scripted, default);
+        app = app.route(path, post(handler).with_state(shared.clone()));
+        shares.push(shared);
+    }
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
-    Mock { url, shared }
+    shares
+        .into_iter()
+        .map(|shared| Mock {
+            url: url.clone(),
+            shared,
+        })
+        .collect()
+}
+
+async fn spawn(path: &'static str, scripted: Vec<Reply>, default: fn(&Value) -> Reply) -> Mock {
+    spawn_routes(vec![(path, scripted, default)])
+        .await
+        .remove(0)
+}
+
+/// Embeddings and chat completions behind one base URL: `(embeddings, llm)`.
+async fn spawn_providers(embedding_replies: Vec<Reply>, llm_replies: Vec<Reply>) -> (Mock, Mock) {
+    let mut mocks = spawn_routes(vec![
+        ("/embeddings", embedding_replies, embed_default),
+        ("/chat/completions", llm_replies, llm_default),
+    ])
+    .await;
+    let llm = mocks.remove(1);
+    (mocks.remove(0), llm)
 }
 
 async fn handler(
@@ -163,7 +197,7 @@ fn embed_default(body: &Value) -> Reply {
 }
 
 async fn spawn_embeddings(scripted: Vec<Reply>) -> Mock {
-    spawn("/v1/embeddings", scripted, embed_default).await
+    spawn("/embeddings", scripted, embed_default).await
 }
 
 // ------------------------------------------------------------------ mock Anthropic
@@ -171,17 +205,13 @@ async fn spawn_embeddings(scripted: Vec<Reply>) -> Mock {
 fn llm_default(_: &Value) -> Reply {
     Reply {
         status: 200,
-        body: json!({"content": [{"type": "text", "text": "ANSWER [1]"}], "stop_reason": "end_turn"}),
+        body: json!({"choices": [{"message": {"role": "assistant", "content": "ANSWER [1]"}, "finish_reason": "stop"}]}),
         headers: vec![],
     }
 }
 
-async fn spawn_llm(scripted: Vec<Reply>) -> Mock {
-    spawn("/v1/messages", scripted, llm_default).await
-}
-
 fn llm_user_text(mock: &Mock, i: usize) -> String {
-    mock.body(i)["messages"][0]["content"]
+    mock.body(i)["messages"][1]["content"]
         .as_array()
         .unwrap()
         .iter()
@@ -223,7 +253,7 @@ fn embedder(url: &str, key: Option<&str>) -> EmbeddingClient {
         reqwest::Client::new(),
         url,
         key.map(str::to_owned),
-        "text-embedding-3-small",
+        "baai/bge-m3",
     )
     .with_backoff_base(Duration::from_millis(5))
 }
@@ -236,10 +266,7 @@ fn marked(i: usize) -> String {
 async fn embeddings_are_batched_by_item_count_and_keep_input_order() {
     let mock = spawn_embeddings(vec![]).await;
     let texts: Vec<String> = (0..200).map(marked).collect();
-    let out = embedder(&mock.url, Some(EMBED_KEY))
-        .embed(&texts)
-        .await
-        .unwrap();
+    let out = embedder(&mock.url, Some(KEY)).embed(&texts).await.unwrap();
 
     assert_eq!(out.len(), 200);
     for (i, vector) in out.iter().enumerate() {
@@ -258,10 +285,7 @@ async fn embeddings_are_batched_by_total_characters() {
     let texts: Vec<String> = (0..3)
         .map(|i| format!("@{i}@{}", "a".repeat(90_000)))
         .collect();
-    let out = embedder(&mock.url, Some(EMBED_KEY))
-        .embed(&texts)
-        .await
-        .unwrap();
+    let out = embedder(&mock.url, Some(KEY)).embed(&texts).await.unwrap();
     assert_eq!(out.len(), 3);
     assert_eq!(mock.count(), 2);
     assert_eq!(mock.body(0)["input"].as_array().unwrap().len(), 2);
@@ -269,7 +293,7 @@ async fn embeddings_are_batched_by_total_characters() {
 
     // A single input above 200,000 characters is refused before any request.
     let mock = spawn_embeddings(vec![]).await;
-    let err = embedder(&mock.url, Some(EMBED_KEY))
+    let err = embedder(&mock.url, Some(KEY))
         .embed(&["a".repeat(200_001)])
         .await
         .unwrap_err();
@@ -280,13 +304,13 @@ async fn embeddings_are_batched_by_total_characters() {
 #[tokio::test]
 async fn embedding_request_has_the_documented_shape() {
     let mock = spawn_embeddings(vec![]).await;
-    embedder(&mock.url, Some(EMBED_KEY))
+    embedder(&mock.url, Some(KEY))
         .embed(&["hello @4@".to_owned()])
         .await
         .unwrap();
     assert_eq!(
         mock.header(0, "authorization").as_deref(),
-        Some(&*format!("Bearer {EMBED_KEY}"))
+        Some(&*format!("Bearer {KEY}"))
     );
     assert!(
         mock.header(0, "content-type")
@@ -295,7 +319,7 @@ async fn embedding_request_has_the_documented_shape() {
     );
     assert_eq!(
         mock.body(0),
-        json!({"model": "text-embedding-3-small", "input": ["hello @4@"], "encoding_format": "float"})
+        json!({"model": "baai/bge-m3", "input": ["hello @4@"]})
     );
 }
 
@@ -303,22 +327,22 @@ async fn embedding_request_has_the_documented_shape() {
 async fn wrong_dimensions_are_rejected() {
     let short = Reply {
         status: 200,
-        body: json!({"data": [{"index": 0, "embedding": vec![0.1f32; 1024]}]}),
+        body: json!({"data": [{"index": 0, "embedding": vec![0.1f32; 768]}]}),
         headers: vec![],
     };
     let mock = spawn_embeddings(vec![short]).await;
-    let err = embedder(&mock.url, Some(EMBED_KEY))
+    let err = embedder(&mock.url, Some(KEY))
         .embed(&["x".to_owned()])
         .await
         .unwrap_err();
     assert_eq!(
         err,
         EmbeddingError::DimensionMismatch {
-            expected: 1536,
-            actual: 1024
+            expected: 1024,
+            actual: 768
         }
     );
-    assert_eq!(err.to_string(), "임베딩 차원이 1024 입니다 (기대 1536)");
+    assert_eq!(err.to_string(), "임베딩 차원이 768 입니다 (기대 1024)");
 }
 
 #[tokio::test]
@@ -326,10 +350,10 @@ async fn embedding_errors_are_readable_retried_when_transient_and_never_leak_the
     // 401: message propagated, not retried, key scrubbed even if the upstream echoes it.
     let mock = spawn_embeddings(vec![error_reply(
         401,
-        &format!("Incorrect API key provided: {EMBED_KEY}"),
+        &format!("Incorrect API key provided: {KEY}"),
     )])
     .await;
-    let err = embedder(&mock.url, Some(EMBED_KEY))
+    let err = embedder(&mock.url, Some(KEY))
         .embed(&["x".to_owned()])
         .await
         .unwrap_err();
@@ -339,14 +363,14 @@ async fn embedding_errors_are_readable_retried_when_transient_and_never_leak_the
         text.starts_with("임베딩 API 오류 (HTTP 401): Incorrect API key provided"),
         "{text}"
     );
-    assert!(!text.contains(EMBED_KEY) && !format!("{err:?}").contains(EMBED_KEY));
+    assert!(!text.contains(KEY) && !format!("{err:?}").contains(KEY));
     assert_eq!(mock.count(), 1);
 
     // 429 (retry-after: 0) then 503 then success.
     let mut limited = error_reply(429, "slow down");
     limited.headers.push(("retry-after", "0"));
     let mock = spawn_embeddings(vec![limited, error_reply(503, "busy")]).await;
-    let out = embedder(&mock.url, Some(EMBED_KEY))
+    let out = embedder(&mock.url, Some(KEY))
         .embed(&["ok @2@".to_owned()])
         .await
         .unwrap();
@@ -360,7 +384,7 @@ async fn embedding_errors_are_readable_retried_when_transient_and_never_leak_the
         .await
         .unwrap_err();
     assert_eq!(err, EmbeddingError::MissingApiKey);
-    assert_eq!(err.to_string(), "EMBEDDING_API_KEY 가 설정되지 않았습니다");
+    assert_eq!(err.to_string(), "OPENROUTER_API_KEY 가 설정되지 않았습니다");
     assert_eq!(mock.count(), 0);
 
     // Nothing to embed: no call and no key needed.
@@ -389,10 +413,9 @@ impl Drop for Harness {
 
 struct Urls<'a> {
     extractor: &'a str,
-    embeddings: &'a str,
-    llm: &'a str,
-    embed_key: Option<&'a str>,
-    llm_key: Option<&'a str>,
+    /// OpenRouter base URL (embeddings and chat completions share it).
+    base: &'a str,
+    key: Option<&'a str>,
 }
 
 fn harness(pool: PgPool, urls: &Urls<'_>) -> Harness {
@@ -402,10 +425,8 @@ fn harness(pool: PgPool, urls: &Urls<'_>) -> Harness {
         ("DATABASE_URL", Some("unused".to_owned())),
         ("DATA_DIR", Some(data.to_string_lossy().into_owned())),
         ("EXTRACTOR_URL", Some(urls.extractor.to_owned())),
-        ("EMBEDDING_BASE_URL", Some(urls.embeddings.to_owned())),
-        ("EMBEDDING_API_KEY", urls.embed_key.map(str::to_owned)),
-        ("LLM_BASE_URL", Some(urls.llm.to_owned())),
-        ("LLM_API_KEY", urls.llm_key.map(str::to_owned)),
+        ("OPENROUTER_BASE_URL", Some(urls.base.to_owned())),
+        ("OPENROUTER_API_KEY", urls.key.map(str::to_owned)),
     ]);
     let config = Config::from_lookup(move |k| env.get(k).cloned().flatten()).unwrap();
     let http = reqwest::Client::new();
@@ -549,19 +570,16 @@ struct Indexed {
 }
 
 /// Runs bundle → pick → extract → rag against the mocks and returns the created index.
-async fn indexed_document(pool: PgPool, llm_key: Option<&str>) -> Indexed {
+async fn indexed_document(pool: PgPool) -> Indexed {
     let (doc, paragraphs) = three_paragraph_doc();
     let extractor = spawn_extractor(&doc).await;
-    let embeddings = spawn_embeddings(vec![]).await;
-    let llm = spawn_llm(vec![]).await;
+    let (embeddings, llm) = spawn_providers(vec![], vec![]).await;
     let h = harness(
         pool,
         &Urls {
             extractor: &extractor,
-            embeddings: &embeddings.url,
-            llm: &llm.url,
-            embed_key: Some(EMBED_KEY),
-            llm_key,
+            base: &embeddings.url,
+            key: Some(KEY),
         },
     );
     let bundle = upload_bundle(&h.app).await;
@@ -589,7 +607,7 @@ async fn indexed_document(pool: PgPool, llm_key: Option<&str>) -> Indexed {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn rag_node_stores_chunks_and_describes_the_query_api(pool: PgPool) {
-    let ix = indexed_document(pool, Some(LLM_KEY)).await;
+    let ix = indexed_document(pool).await;
 
     // The node's output follows CONTEXT §4.3.
     let (status, bytes) = raw(
@@ -610,11 +628,11 @@ async fn rag_node_stores_chunks_and_describes_the_query_api(pool: PgPool) {
             "endpoint": format!("/api/rag/{}/query", ix.index_id),
             "request": {"question": "string", "topK": "number (선택, 기본 5, 1~20)"},
             "chunkCount": 3,
-            "embeddingModel": "text-embedding-3-small"
+            "embeddingModel": "baai/bge-m3"
         })
     );
 
-    // The DB holds the index and exactly chunkCount chunks, in order, with 1536-dim vectors.
+    // The DB holds the index and exactly chunkCount chunks, in order, with 1024-dim vectors.
     let index: (Uuid, String, String) = sqlx::query_as(
         "SELECT run_id, node_id, embedding_model FROM rag_indexes WHERE id = $1::uuid",
     )
@@ -624,7 +642,7 @@ async fn rag_node_stores_chunks_and_describes_the_query_api(pool: PgPool) {
     .unwrap();
     assert_eq!(
         (index.0.to_string(), index.1.as_str(), index.2.as_str()),
-        (ix.run_id.clone(), "r", "text-embedding-3-small")
+        (ix.run_id.clone(), "r", "baai/bge-m3")
     );
     let rows: Vec<(i32, String, i32)> = sqlx::query_as(
         "SELECT chunk_index, content, vector_dims(embedding) FROM rag_chunks WHERE index_id = $1::uuid ORDER BY chunk_index",
@@ -637,7 +655,7 @@ async fn rag_node_stores_chunks_and_describes_the_query_api(pool: PgPool) {
     for (i, (chunk_index, content, dims)) in rows.iter().enumerate() {
         assert_eq!(*chunk_index as usize, i);
         assert_eq!(content, &ix.paragraphs[i]);
-        assert_eq!(*dims, 1536);
+        assert_eq!(*dims, 1024);
     }
 
     // One embeddings request carried all three chunks, authenticated with the configured key.
@@ -645,13 +663,13 @@ async fn rag_node_stores_chunks_and_describes_the_query_api(pool: PgPool) {
     assert_eq!(ix.embeddings.body(0)["input"].as_array().unwrap().len(), 3);
     assert_eq!(
         ix.embeddings.header(0, "authorization").as_deref(),
-        Some(&*format!("Bearer {EMBED_KEY}"))
+        Some(&*format!("Bearer {KEY}"))
     );
 }
 
 #[sqlx::test(migrations = "./migrations")]
 async fn query_returns_the_closest_chunk_first_and_answers_from_it(pool: PgPool) {
-    let ix = indexed_document(pool, Some(LLM_KEY)).await;
+    let ix = indexed_document(pool).await;
     let uri = format!("/api/rag/{}/query", ix.index_id);
 
     let (status, body) = call(
@@ -689,12 +707,18 @@ async fn query_returns_the_closest_chunk_first_and_answers_from_it(pool: PgPool)
         "only topK chunks are passed"
     );
     assert!(prompt.contains("Question: Tell me about bravo @1@"));
-    let system = ix.llm.body(0)["system"].as_str().unwrap().to_owned();
+    let system = ix.llm.body(0)["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     assert!(
         system.contains("only the information in the context")
             || system.contains("only the numbered context")
     );
-    assert_eq!(ix.llm.header(0, "x-api-key").as_deref(), Some(LLM_KEY));
+    assert_eq!(
+        ix.llm.header(0, "authorization").as_deref(),
+        Some(&*format!("Bearer {KEY}"))
+    );
 
     // Default topK is 5 (all 3 chunks here); the best match changes with the question.
     let (_, body) = call(
@@ -711,7 +735,7 @@ async fn query_returns_the_closest_chunk_first_and_answers_from_it(pool: PgPool)
 
 #[sqlx::test(migrations = "./migrations")]
 async fn query_validation_and_missing_index(pool: PgPool) {
-    let ix = indexed_document(pool, Some(LLM_KEY)).await;
+    let ix = indexed_document(pool).await;
     let uri = format!("/api/rag/{}/query", ix.index_id);
     let llm_calls_before = ix.llm.count();
     let embed_calls_before = ix.embeddings.count();
@@ -764,51 +788,38 @@ async fn query_validation_and_missing_index(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn query_maps_provider_failures_to_502_without_leaking_keys(pool: PgPool) {
-    // No LLM key: retrieval works, answering fails.
-    let ix = indexed_document(pool.clone(), None).await;
+async fn query_maps_provider_failures_to_502_without_leaking_the_key(pool: PgPool) {
+    let ix = indexed_document(pool.clone()).await;
     let uri = format!("/api/rag/{}/query", ix.index_id);
-    let (status, err) = call(&ix.h.app, "POST", &uri, Some(json!({"question": "q @0@"}))).await;
-    assert_eq!(status, StatusCode::BAD_GATEWAY);
-    assert_eq!(err["error"]["code"], "UPSTREAM");
-    assert_eq!(
-        err["error"]["message"],
-        "LLM_API_KEY 가 설정되지 않았습니다"
-    );
 
-    // No embedding key at query time (the index itself was built with one).
-    let embeddings = spawn_embeddings(vec![]).await;
-    let llm = spawn_llm(vec![]).await;
+    // No key configured at query time (the index itself was built with one): nothing is called.
+    let (embeddings, llm) = spawn_providers(vec![], vec![]).await;
     let h = harness(
         pool.clone(),
         &Urls {
             extractor: "http://127.0.0.1:9",
-            embeddings: &embeddings.url,
-            llm: &llm.url,
-            embed_key: None,
-            llm_key: Some(LLM_KEY),
+            base: &embeddings.url,
+            key: None,
         },
     );
     let (status, err) = call(&h.app, "POST", &uri, Some(json!({"question": "q"}))).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(err["error"]["code"], "UPSTREAM");
     assert_eq!(
         err["error"]["message"],
-        "EMBEDDING_API_KEY 가 설정되지 않았습니다"
+        "OPENROUTER_API_KEY 가 설정되지 않았습니다"
     );
-    assert_eq!(embeddings.count(), 0);
-    assert_eq!(llm.count(), 0);
+    assert_eq!((embeddings.count(), llm.count()), (0, 0));
 
-    // Upstream errors that echo the keys are scrubbed.
-    let embeddings =
-        spawn_embeddings(vec![error_reply(401, &format!("bad key {EMBED_KEY}"))]).await;
+    // An embedding error that echoes the key is scrubbed.
+    let (embeddings, _llm) =
+        spawn_providers(vec![error_reply(401, &format!("bad key {KEY}"))], vec![]).await;
     let h = harness(
         pool.clone(),
         &Urls {
             extractor: "http://127.0.0.1:9",
-            embeddings: &embeddings.url,
-            llm: &llm.url,
-            embed_key: Some(EMBED_KEY),
-            llm_key: Some(LLM_KEY),
+            base: &embeddings.url,
+            key: Some(KEY),
         },
     );
     let (status, err) = call(&h.app, "POST", &uri, Some(json!({"question": "q"}))).await;
@@ -818,18 +829,17 @@ async fn query_maps_provider_failures_to_502_without_leaking_keys(pool: PgPool) 
         message.starts_with("임베딩 API 오류 (HTTP 401): bad key"),
         "{message}"
     );
-    assert!(!err.to_string().contains(EMBED_KEY));
+    assert!(!err.to_string().contains(KEY));
 
-    let embeddings = spawn_embeddings(vec![]).await;
-    let llm = spawn_llm(vec![error_reply(400, &format!("invalid {LLM_KEY}"))]).await;
+    // Same for the answering step; retrieval worked, the LLM call fails.
+    let (embeddings, llm) =
+        spawn_providers(vec![], vec![error_reply(400, &format!("invalid {KEY}"))]).await;
     let h = harness(
-        pool,
+        pool.clone(),
         &Urls {
             extractor: "http://127.0.0.1:9",
-            embeddings: &embeddings.url,
-            llm: &llm.url,
-            embed_key: Some(EMBED_KEY),
-            llm_key: Some(LLM_KEY),
+            base: &embeddings.url,
+            key: Some(KEY),
         },
     );
     let (status, err) = call(&h.app, "POST", &uri, Some(json!({"question": "q"}))).await;
@@ -840,23 +850,40 @@ async fn query_maps_provider_failures_to_502_without_leaking_keys(pool: PgPool) 
             .unwrap()
             .starts_with("LLM API 오류 (HTTP 400): invalid")
     );
-    assert!(!err.to_string().contains(LLM_KEY));
+    assert!(!err.to_string().contains(KEY));
+    assert_eq!((embeddings.count(), llm.count()), (1, 1));
+
+    // An empty answer is a failure too, not an empty 200.
+    let empty = Reply {
+        status: 200,
+        body: json!({"choices": [{"message": {"content": ""}, "finish_reason": "stop"}]}),
+        headers: vec![],
+    };
+    let (embeddings, _llm) = spawn_providers(vec![], vec![empty]).await;
+    let h = harness(
+        pool,
+        &Urls {
+            extractor: "http://127.0.0.1:9",
+            base: &embeddings.url,
+            key: Some(KEY),
+        },
+    );
+    let (status, err) = call(&h.app, "POST", &uri, Some(json!({"question": "q"}))).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(err["error"]["message"], "LLM 응답이 비어 있습니다");
 }
 
 #[sqlx::test(migrations = "./migrations")]
 async fn rag_node_fails_for_empty_documents_and_missing_embedding_key(pool: PgPool) {
     // Empty / whitespace-only Markdown.
     let extractor = spawn_extractor("  \n\n \n").await;
-    let embeddings = spawn_embeddings(vec![]).await;
-    let llm = spawn_llm(vec![]).await;
+    let (embeddings, _llm) = spawn_providers(vec![], vec![]).await;
     let h = harness(
         pool.clone(),
         &Urls {
             extractor: &extractor,
-            embeddings: &embeddings.url,
-            llm: &llm.url,
-            embed_key: Some(EMBED_KEY),
-            llm_key: Some(LLM_KEY),
+            base: &embeddings.url,
+            key: Some(KEY),
         },
     );
     let bundle = upload_bundle(&h.app).await;
@@ -878,10 +905,8 @@ async fn rag_node_fails_for_empty_documents_and_missing_embedding_key(pool: PgPo
         pool.clone(),
         &Urls {
             extractor: &extractor,
-            embeddings: &embeddings.url,
-            llm: &llm.url,
-            embed_key: None,
-            llm_key: Some(LLM_KEY),
+            base: &embeddings.url,
+            key: None,
         },
     );
     let bundle = upload_bundle(&h.app).await;
@@ -889,7 +914,7 @@ async fn rag_node_fails_for_empty_documents_and_missing_embedding_key(pool: PgPo
     assert_eq!(node_of(&detail, "r")["status"], "failed");
     assert_eq!(
         node_of(&detail, "r")["error"],
-        "EMBEDDING_API_KEY 가 설정되지 않았습니다"
+        "OPENROUTER_API_KEY 가 설정되지 않았습니다"
     );
     let indexes: i64 = sqlx::query_scalar("SELECT count(*) FROM rag_indexes")
         .fetch_one(&pool)
@@ -902,16 +927,14 @@ async fn rag_node_fails_for_empty_documents_and_missing_embedding_key(pool: PgPo
 async fn a_failed_embedding_stores_nothing_and_reports_the_api_message(pool: PgPool) {
     let (doc, _) = three_paragraph_doc();
     let extractor = spawn_extractor(&doc).await;
-    let embeddings = spawn_embeddings(vec![error_reply(400, "input is invalid")]).await;
-    let llm = spawn_llm(vec![]).await;
+    let (embeddings, _llm) =
+        spawn_providers(vec![error_reply(400, "input is invalid")], vec![]).await;
     let h = harness(
         pool.clone(),
         &Urls {
             extractor: &extractor,
-            embeddings: &embeddings.url,
-            llm: &llm.url,
-            embed_key: Some(EMBED_KEY),
-            llm_key: Some(LLM_KEY),
+            base: &embeddings.url,
+            key: Some(KEY),
         },
     );
     let bundle = upload_bundle(&h.app).await;
@@ -931,8 +954,8 @@ async fn a_failed_embedding_stores_nothing_and_reports_the_api_message(pool: PgP
 #[sqlx::test(migrations = "./migrations")]
 async fn search_is_scoped_to_one_index(pool: PgPool) {
     // Two documents indexed in the same table; each query must only see its own chunks.
-    let first = indexed_document(pool.clone(), Some(LLM_KEY)).await;
-    let second = indexed_document(pool, Some(LLM_KEY)).await;
+    let first = indexed_document(pool.clone()).await;
+    let second = indexed_document(pool).await;
     assert_ne!(first.index_id, second.index_id);
     let (_, body) = call(
         &second.h.app,

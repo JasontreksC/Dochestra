@@ -27,13 +27,14 @@ RFP 원문만으로는 타입 체계가 닫히지 않는 지점이 있어 아래
 - **구성**: 단일 Docker Compose 네트워크 내 4개 컨테이너 (`web`만 호스트 `:80` 공개)
   - `web` (`:80`): TypeScript, React 19, Vite, `pnpm`(Node.js 22 LTS), `@xyflow/react`(React Flow), React Router, TanStack Query, Zustand, `EventSource`(SSE), `ts-rs` 생성 타입, Tailwind CSS v4, nginx 리버스 프록시(`/api/*` -> `http://engine:8080`)
   - `engine` (`:8080`): Rust (stable, edition 2024), Tokio, Axum 0.8(SSE), SQLx 0.8(오프라인 `.sqlx` 검증 및 마이그레이션), `pgvector`, `petgraph`, `serde`/`serde_json`, `ts-rs`, `reqwest`, `tokio::fs`, `tracing`, `thiserror`, `anyhow`
-  - `extractor` (`:8000`): Python 3.12, `uv`, FastAPI, `uvicorn`, Docling (CPU 전용 torch, 이미지 빌드 시 모델 사전 다운로드)
+  - `extractor` (`:8000`): Python 3.12, `uv`, FastAPI, `uvicorn`, Docling (**CUDA torch, GPU 가속 — T-117**, `EXTRACTOR_DEVICE=auto|cuda|cpu`, GPU 없으면 auto 가 CPU 로 폴백; 이미지 빌드 시 모델 사전 다운로드)
   - `db` (`:5432`): `pgvector/pgvector:pg16`
 - **공유 볼륨**: `data` -> `engine:/data`, `extractor:/data` / `pgdata` -> `db:/var/lib/postgresql/data`
 - **크레이트/패키지 버전**: 위에 적은 메이저 버전을 기준으로 워커가 `cargo add` / `pnpm add` / `uv add`로 **실제 최신 호환 버전을 확인해** 잠금 파일에 고정한다(추측 금지).
   - 확정 고정(web, T-112): React 19.3, **react-router 8.x**(`react-router` 패키지, BrowserRouter/Routes API), TypeScript ~6.0.3(typescript-eslint peer 제약으로 7.x 제외), Vite 8, Vitest 5, @xyflow/react 13, Tailwind 4.3, pnpm 12.23.0, nginx 1.30.8-alpine. 경로 별칭 `@/*` → `web/src/*`.
   - **@xyflow/react 13 주의(T-403)**: v12와 API가 다르다 — `applyNodeChanges` 없음, `onNodesChange`는 `NodeChangeset`을 받아 `.applyTo()`/`.toArray()` 사용, `useStoreApi` → `useReactFlowStoreApi`. 웹 문서·예제(v12 기준)를 그대로 쓰지 말 것.
   - 확정 고정: `reqwest` 0.12 (`default-features=false`, `json`, `rustls-tls` — 0.13은 feature 명 변경·aws-lc 백엔드라 제외, sqlx와 동일 ring 백엔드 유지). Rust 1.100.0 stable, Docling 2.153.0.
+- **GPU (T-117)**: 호스트 드라이버 620.70, Docker nvidia 런타임·CDI 사용 가능. GPU 는 extractor 만 사용(compose 에서 GPU 장치 예약). engine·web·db 는 GPU 불필요.
 - **컨테이너 사용자 규약**: `engine`·`extractor` 런타임은 모두 **uid 10001 / gid 10001** 비루트 사용자로 실행하고, 이미지에 `/data`를 미리 만들어 `10001:10001` 소유로 둔다(공유 `data` 볼륨 쓰기 권한 일치).
 
 ---
@@ -423,7 +424,7 @@ ALTER TABLE node_runs ADD COLUMN seq INTEGER NOT NULL DEFAULT 0;  -- ExecutionPl
 | `EMBEDDING_MODEL` | engine | `baai/bge-m3` (1024차원 고정) |
 | `TTS_MODEL` / `TTS_VOICE` | engine | `google/gemini-3.8-flash-lite-tts` / `Kore` |
 
-### 6.2. 로컬 개발 환경 규약 (호스트: Linux, 2 vCPU / 7 GiB RAM)
+### 6.2. 로컬 개발 환경 규약 (호스트: Linux, 4 vCPU / 15 GiB RAM, NVIDIA Tesla T4 16GB — 2026-11-26 재부팅 후 사양 변경)
 - Rust: `rustup` stable을 사용자 홈에 설치(`~/.cargo`). 명령 실행 전 `source ~/.cargo/env`.
 - pnpm: `corepack enable --install-directory ~/.local/bin pnpm` 후 `export PATH=$HOME/.local/bin:$PATH`. `web/package.json`의 `packageManager` 필드로 버전 고정.
 - Python: `uv`(설치됨), `extractor/.python-version` = `3.12`.

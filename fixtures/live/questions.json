@@ -1,0 +1,10 @@
+{
+  "report_en": [
+    { "question": "What was Aurora Robotics' total revenue in 2025?", "expect": ["482"] },
+    { "question": "Which region grew the fastest, and by how much?", "expect": ["Asia-Pacific", "31"] }
+  ],
+  "report_ko": [
+    { "question": "2025년 총매출은 얼마였나요?", "expect": ["4억 8,200만", "482"] },
+    { "question": "가장 빠르게 성장한 지역은 어디인가요?", "expect": ["아시아"] }
+  ]
+}

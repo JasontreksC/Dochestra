@@ -28,7 +28,7 @@ use sqlx::PgPool;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-// ------------------------------------------------------------------ mock Anthropic server
+// ------------------------------------------------------------------ mock OpenRouter (chat/completions)
 
 #[derive(Clone)]
 struct Reply {
@@ -40,7 +40,7 @@ struct Reply {
 fn ok(text: &str) -> Reply {
     Reply {
         status: 200,
-        body: json!({"content": [{"type": "text", "text": text}], "stop_reason": "end_turn"})
+        body: json!({"choices": [{"message": {"role": "assistant", "content": text}, "finish_reason": "stop"}]})
             .to_string(),
         headers: vec![],
     }
@@ -57,7 +57,7 @@ fn raw(status: u16, body: Value) -> Reply {
 fn error(status: u16, message: &str) -> Reply {
     raw(
         status,
-        json!({"type": "error", "error": {"type": "api_error", "message": message}}),
+        json!({"error": {"message": message, "code": status}}),
     )
 }
 
@@ -96,7 +96,7 @@ impl MockLlm {
     /// Text of the last text block of request `i`.
     fn user_text(&self, i: usize) -> String {
         let body = self.body(i);
-        body["messages"][0]["content"]
+        body["messages"][1]["content"]
             .as_array()
             .unwrap()
             .iter()
@@ -107,11 +107,11 @@ impl MockLlm {
     }
 
     fn image_blocks(&self, i: usize) -> Vec<Value> {
-        self.body(i)["messages"][0]["content"]
+        self.body(i)["messages"][1]["content"]
             .as_array()
             .unwrap()
             .iter()
-            .filter(|b| b["type"] == "image")
+            .filter(|b| b["type"] == "image_url")
             .cloned()
             .collect()
     }
@@ -124,7 +124,7 @@ async fn spawn_llm(replies: Vec<Reply>) -> MockLlm {
     };
     // Large image requests must reach the handler (axum's default limit is 2 MiB).
     let app = Router::new()
-        .route("/v1/messages", post(llm_handler))
+        .route("/chat/completions", post(llm_handler))
         .layer(axum::extract::DefaultBodyLimit::max(256 * 1024 * 1024))
         .with_state(shared.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -170,13 +170,22 @@ async fn llm_handler(
 
 const KEY: &str = "sk-test-key-123";
 
+/// Base64 payload of an `image_url` content part (`data:image/jpeg;base64,...`).
+fn image_b64(block: &Value) -> String {
+    block["image_url"]["url"]
+        .as_str()
+        .and_then(|u| u.strip_prefix("data:image/jpeg;base64,"))
+        .expect("jpeg data URL")
+        .to_owned()
+}
+
 fn client(url: &str, key: Option<&str>) -> LlmClient {
     LlmClient::new(
         reqwest::Client::new(),
         url,
         key.map(str::to_owned),
-        "claude-opus-5-5",
-        "high",
+        "meta/muse-ember",
+        "medium",
     )
     .with_backoff_base(Duration::from_millis(5))
 }
@@ -207,28 +216,31 @@ async fn request_has_the_documented_shape() {
     );
     assert_eq!(mock.count(), 1);
 
-    assert_eq!(mock.header(0, "x-api-key").as_deref(), Some(KEY));
     assert_eq!(
-        mock.header(0, "anthropic-version").as_deref(),
-        Some("2026-10-21")
+        mock.header(0, "authorization").as_deref(),
+        Some(&*format!("Bearer {KEY}"))
     );
-    assert_eq!(
-        mock.header(0, "anthropic-beta").as_deref(),
-        Some("server-side-fallback-2026-07-01")
-    );
+    assert_eq!(mock.header(0, "x-title").as_deref(), Some("Dochestra"));
     assert!(
         mock.header(0, "content-type")
             .unwrap()
             .starts_with("application/json")
     );
+    for retired in ["x-api-key", "anthropic-version", "anthropic-beta"] {
+        assert!(
+            mock.header(0, retired).is_none(),
+            "{retired} must not be sent"
+        );
+    }
 
     let body = mock.body(0);
-    assert_eq!(body["model"], "claude-opus-5-5");
+    assert_eq!(body["model"], "meta/muse-ember");
     assert_eq!(body["max_tokens"], 16000);
-    assert_eq!(body["system"], "system prompt");
-    assert_eq!(body["output_config"], json!({"effort": "high"}));
-    assert_eq!(body["fallbacks"], "default");
-    for forbidden in [
+    assert_eq!(body["reasoning"], json!({"effort": "medium"}));
+    for retired in [
+        "system",
+        "output_config",
+        "fallbacks",
         "thinking",
         "temperature",
         "top_p",
@@ -236,18 +248,20 @@ async fn request_has_the_documented_shape() {
         "tool_choice",
         "stream",
     ] {
-        assert!(
-            body.get(forbidden).is_none(),
-            "{forbidden} must not be sent"
-        );
+        assert!(body.get(retired).is_none(), "{retired} must not be sent");
     }
     let messages = body["messages"].as_array().unwrap();
-    assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0]["role"], "user");
+    assert_eq!(messages.len(), 2);
     assert_eq!(
-        messages[0]["content"],
+        messages[0],
+        json!({"role": "system", "content": "system prompt"})
+    );
+    assert_eq!(messages[1]["role"], "user");
+    // Image parts come first, then the text parts in their original order.
+    assert_eq!(
+        messages[1]["content"],
         json!([
-            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "AQID"}},
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AQID"}},
             {"type": "text", "text": "first text"},
             {"type": "text", "text": "second text"},
         ])
@@ -255,16 +269,22 @@ async fn request_has_the_documented_shape() {
 }
 
 #[tokio::test]
-async fn only_text_blocks_are_joined() {
-    let body = json!({
-        "content": [
-            {"type": "thinking", "thinking": "let me think"},
-            {"type": "text", "text": "Hello, "},
-            {"type": "fallback", "model": "other"},
-            {"type": "text", "text": "world"}
-        ],
-        "stop_reason": "end_turn"
-    });
+async fn the_request_goes_to_chat_completions_under_the_base_url() {
+    // The client appends `/chat/completions` to whatever base URL it is given (here with a
+    // path prefix and a trailing slash).
+    let mock = spawn_llm(vec![ok("fine")]).await;
+    let c = client(&format!("{}/", mock.url), Some(KEY));
+    assert_eq!(c.complete(simple("x")).await.unwrap(), "fine");
+    assert_eq!(mock.count(), 1);
+}
+
+#[tokio::test]
+async fn array_content_parts_are_joined() {
+    let body = json!({"choices": [{"message": {"role": "assistant", "content": [
+        {"type": "text", "text": "Hello, "},
+        {"type": "reasoning", "text": "hidden"},
+        {"type": "text", "text": "world"}
+    ]}, "finish_reason": "stop"}]});
     let mock = spawn_llm(vec![raw(200, body)]).await;
     assert_eq!(
         client(&mock.url, Some(KEY))
@@ -276,30 +296,81 @@ async fn only_text_blocks_are_joined() {
 }
 
 #[tokio::test]
-async fn refusal_and_max_tokens_are_reported() {
+async fn length_empty_and_refused_answers_are_reported_without_retry() {
     let refusal = raw(
         200,
-        json!({"content": [], "stop_reason": "refusal", "stop_details": {"category": "cbrn"}}),
+        json!({"choices": [{"message": {"content": null, "refusal": "I cannot help with that."}, "finish_reason": "stop"}]}),
     );
     let truncated = raw(
         200,
-        json!({"content": [{"type": "text", "text": "cut"}], "stop_reason": "max_tokens"}),
+        json!({"choices": [{"message": {"content": "cut"}, "finish_reason": "length"}]}),
     );
-    let mock = spawn_llm(vec![refusal, truncated]).await;
+    // A reasoning model that spent the whole budget on thinking: content null, finish length.
+    let all_reasoning = raw(
+        200,
+        json!({"choices": [{"message": {"content": null}, "finish_reason": "length"}]}),
+    );
+    let empty = raw(
+        200,
+        json!({"choices": [{"message": {"content": ""}, "finish_reason": "stop"}]}),
+    );
+    let null = raw(
+        200,
+        json!({"choices": [{"message": {"content": null}, "finish_reason": "stop"}]}),
+    );
+    let mock = spawn_llm(vec![refusal, truncated, all_reasoning, empty, null]).await;
     let c = client(&mock.url, Some(KEY));
 
     let err = c.complete(simple("x")).await.unwrap_err();
+    assert_eq!(err, LlmError::Refusal);
+    assert_eq!(err.to_string(), "LLM 이 요청을 거절했습니다");
+    for _ in 0..2 {
+        let err = c.complete(simple("x")).await.unwrap_err();
+        assert_eq!(err, LlmError::MaxTokens);
+        assert_eq!(err.to_string(), "LLM 출력이 최대 길이에 도달했습니다");
+    }
+    for _ in 0..2 {
+        let err = c.complete(simple("x")).await.unwrap_err();
+        assert_eq!(err, LlmError::Empty);
+        assert_eq!(err.to_string(), "LLM 응답이 비어 있습니다");
+    }
+    assert_eq!(mock.count(), 5); // none of them is retried
+}
+
+#[tokio::test]
+async fn errors_reported_inside_a_200_body_are_handled_like_http_errors() {
+    // OpenRouter can answer 200 with a body-level error for upstream failures.
+    let transient = raw(
+        200,
+        json!({"error": {"message": "Provider returned error", "code": 429}}),
+    );
+    let mock = spawn_llm(vec![transient, ok("recovered")]).await;
+    assert_eq!(
+        client(&mock.url, Some(KEY))
+            .complete(simple("x"))
+            .await
+            .unwrap(),
+        "recovered"
+    );
+    assert_eq!(mock.count(), 2);
+
+    let fatal = raw(
+        200,
+        json!({"error": {"message": "invalid model", "code": 400}}),
+    );
+    let mock = spawn_llm(vec![fatal]).await;
+    let err = client(&mock.url, Some(KEY))
+        .complete(simple("x"))
+        .await
+        .unwrap_err();
     assert_eq!(
         err,
-        LlmError::Refusal {
-            category: Some("cbrn".to_owned())
+        LlmError::Api {
+            status: 400,
+            message: "invalid model".to_owned()
         }
     );
-    assert_eq!(err.to_string(), "LLM 이 요청을 거절했습니다 (cbrn)");
-    let err = c.complete(simple("x")).await.unwrap_err();
-    assert_eq!(err, LlmError::MaxTokens);
-    assert_eq!(err.to_string(), "LLM 출력이 최대 길이에 도달했습니다");
-    assert_eq!(mock.count(), 2); // neither is retried
+    assert_eq!(mock.count(), 1);
 }
 
 #[tokio::test]
@@ -317,11 +388,11 @@ async fn transient_errors_are_retried() {
     );
     assert_eq!(mock.count(), 2);
 
-    // Three 5xx/529 failures, then success on the 4th (= last allowed) attempt.
+    // Three failures (503, 500, 502), then success on the 4th (= last allowed) attempt.
     let mock = spawn_llm(vec![
         error(503, "a"),
-        error(529, "b"),
-        error(500, "c"),
+        error(500, "b"),
+        error(502, "c"),
         ok("finally"),
     ])
     .await;
@@ -334,7 +405,7 @@ async fn transient_errors_are_retried() {
     );
     assert_eq!(mock.count(), 4);
 
-    // 502 as well; persistent failure gives up after 1 + 3 attempts with the last error.
+    // Persistent failure gives up after 1 + 3 attempts with the last error.
     let mock = spawn_llm(vec![
         error(502, "1"),
         error(502, "2"),
@@ -358,7 +429,8 @@ async fn transient_errors_are_retried() {
 
 #[tokio::test]
 async fn client_errors_fail_immediately_with_the_api_message() {
-    for status in [400, 401, 403, 404, 413] {
+    // 529 (Anthropic's "overloaded") is not part of the OpenRouter retry set either.
+    for status in [400, 401, 402, 403, 404, 413, 529] {
         let mock = spawn_llm(vec![error(status, "model not found")]).await;
         let err = client(&mock.url, Some(KEY))
             .complete(simple("x"))
@@ -402,7 +474,7 @@ async fn missing_key_fails_without_any_http_call() {
             .await
             .unwrap_err();
         assert_eq!(err, LlmError::MissingApiKey);
-        assert_eq!(err.to_string(), "LLM_API_KEY 가 설정되지 않았습니다");
+        assert_eq!(err.to_string(), "OPENROUTER_API_KEY 가 설정되지 않았습니다");
     }
     assert_eq!(mock.count(), 0);
 }
@@ -410,7 +482,7 @@ async fn missing_key_fails_without_any_http_call() {
 #[tokio::test]
 async fn the_api_key_never_appears_in_errors_or_debug_output() {
     // An upstream that echoes the key back must not leak it through our error.
-    let mock = spawn_llm(vec![error(401, &format!("invalid x-api-key: {KEY}"))]).await;
+    let mock = spawn_llm(vec![error(401, &format!("invalid key: {KEY}"))]).await;
     let c = client(&mock.url, Some(KEY));
     let err = c.complete(simple("x")).await.unwrap_err();
     assert!(!err.to_string().contains(KEY), "{err}");
@@ -549,7 +621,10 @@ async fn translate_preserves_chunk_order_and_code_blocks() {
         "code block must stay whole: {middle:?}"
     );
     // The system prompt carries the settings.
-    let system = mock.body(0)["system"].as_str().unwrap().to_owned();
+    let system = mock.body(0)["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     assert!(
         system.contains("Target language: Korean")
             && system.contains("widget => 위젯")
@@ -579,7 +654,7 @@ async fn llm_failures_become_node_failures() {
     assert_eq!(message, "LLM API 오류 (HTTP 400): bad request");
 
     let message = failed(translate::run(&client(&mock.url, None), &env.ctx, &inputs).await);
-    assert_eq!(message, "LLM_API_KEY 가 설정되지 않았습니다");
+    assert_eq!(message, "OPENROUTER_API_KEY 가 설정되지 않았습니다");
 }
 
 #[tokio::test]
@@ -597,8 +672,11 @@ async fn analyze_sends_the_image_and_enforces_the_size_limit() {
     assert_eq!(env.output_text(&out), "## 차트\n설명");
     let images = mock.image_blocks(0);
     assert_eq!(images.len(), 1);
-    assert_eq!(images[0]["source"]["data"], STANDARD.encode(&jpg));
-    assert_eq!(mock.body(0)["messages"][0]["content"][0]["type"], "image"); // image before text
+    assert_eq!(image_b64(&images[0]), STANDARD.encode(&jpg));
+    assert_eq!(
+        mock.body(0)["messages"][1]["content"][0]["type"],
+        "image_url"
+    ); // image before text
 
     // Exactly 5 MiB is fine, one byte more is rejected before any request.
     let exact = vec![0u8; 5 * 1024 * 1024];
@@ -679,19 +757,16 @@ async fn summary_sends_images_before_the_document_in_order() {
     )
     .await
     .unwrap();
-    let content = mock.body(0)["messages"][0]["content"].clone();
+    let content = mock.body(0)["messages"][1]["content"].clone();
     let types: Vec<&str> = content
         .as_array()
         .unwrap()
         .iter()
         .map(|b| b["type"].as_str().unwrap())
         .collect();
-    assert_eq!(types, ["image", "image", "image", "text"]);
+    assert_eq!(types, ["image_url", "image_url", "image_url", "text"]);
     for (i, block) in mock.image_blocks(0).iter().enumerate() {
-        assert_eq!(
-            block["source"]["data"],
-            STANDARD.encode([0xff, 0xd8, i as u8])
-        );
+        assert_eq!(image_b64(block), STANDARD.encode([0xff, 0xd8, i as u8]));
     }
     assert!(mock.user_text(0).contains("첨부된 이미지 3개"));
 }
@@ -824,13 +899,7 @@ async fn summary_keeps_images_only_while_the_request_fits() {
     // The first images (in order) are the ones kept.
     for (i, block) in blocks.iter().enumerate() {
         let prefix = STANDARD.encode([i as u8 + 1; 3]);
-        assert!(
-            block["source"]["data"]
-                .as_str()
-                .unwrap()
-                .starts_with(&prefix),
-            "image {i}"
-        );
+        assert!(image_b64(block).starts_with(&prefix), "image {i}");
     }
     assert_eq!(
         env.output_text(&out),
@@ -912,8 +981,8 @@ fn harness(pool: PgPool, extractor_url: &str, llm_url: &str, key: Option<&str>) 
         "DATABASE_URL" => Some("unused".to_owned()),
         "DATA_DIR" => Some(dir.clone()),
         "EXTRACTOR_URL" => Some(extractor_url.clone()),
-        "LLM_BASE_URL" => Some(llm_url.clone()),
-        "LLM_API_KEY" => key.clone(),
+        "OPENROUTER_BASE_URL" => Some(llm_url.clone()),
+        "OPENROUTER_API_KEY" => key.clone(),
         _ => None,
     })
     .unwrap();
@@ -1072,12 +1141,15 @@ async fn extract_then_translate_run_succeeds(pool: PgPool) {
     assert_eq!(llm.count(), 1);
     assert_eq!(llm.user_text(0), EXTRACTED_MD);
     assert!(
-        llm.body(0)["system"]
+        llm.body(0)["messages"][0]["content"]
             .as_str()
             .unwrap()
             .contains("Target language: ko")
     );
-    assert_eq!(llm.header(0, "x-api-key").as_deref(), Some(KEY));
+    assert_eq!(
+        llm.header(0, "authorization").as_deref(),
+        Some(&*format!("Bearer {KEY}"))
+    );
 
     let resp = h
         .app
@@ -1114,7 +1186,7 @@ async fn missing_api_key_fails_only_the_llm_node(pool: PgPool) {
     assert_eq!(node_of(&detail, "t")["status"], "failed");
     assert_eq!(
         node_of(&detail, "t")["error"],
-        "LLM_API_KEY 가 설정되지 않았습니다"
+        "OPENROUTER_API_KEY 가 설정되지 않았습니다"
     );
     assert_eq!(llm.count(), 0);
 }
@@ -1123,7 +1195,7 @@ async fn missing_api_key_fails_only_the_llm_node(pool: PgPool) {
 async fn the_key_never_leaks_through_run_results(pool: PgPool) {
     let extractor = spawn_extractor().await;
     // Upstream echoes the key in its error message.
-    let llm = spawn_llm(vec![error(401, &format!("invalid x-api-key {KEY}"))]).await;
+    let llm = spawn_llm(vec![error(401, &format!("invalid key {KEY}"))]).await;
     let h = harness(pool, &extractor, &llm.url, Some(KEY));
     let bundle = upload_bundle(&h.app).await;
 
@@ -1131,7 +1203,7 @@ async fn the_key_never_leaks_through_run_results(pool: PgPool) {
     assert_eq!(detail["status"], "failed");
     let error = node_of(&detail, "t")["error"].as_str().unwrap();
     assert!(
-        error.starts_with("LLM API 오류 (HTTP 401): invalid x-api-key"),
+        error.starts_with("LLM API 오류 (HTTP 401): invalid key"),
         "{error}"
     );
     assert!(

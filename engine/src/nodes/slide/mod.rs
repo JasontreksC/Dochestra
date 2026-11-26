@@ -1,4 +1,4 @@
-//! `slide` node: Claude drafts the deck structure (JSON), the engine renders a 16:9 PDF.
+//! `slide` node: the LLM drafts the deck structure (JSON), the engine renders a 16:9 PDF.
 
 pub mod render;
 pub mod spec;

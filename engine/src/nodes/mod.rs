@@ -3,6 +3,7 @@
 pub mod analyze;
 pub mod bundle;
 pub mod extract;
+pub mod fill;
 pub mod json_input;
 pub mod pick;
 pub mod rag;
@@ -24,13 +25,12 @@ use crate::clients::llm::{LlmClient, base64_len};
 use crate::clients::tts::TtsClient;
 use crate::config::Config;
 use crate::executor::runner::{
-    Artifact, NodeContext, NodeError, NodeInputs, NodeOutputs, NodeRunner, UnimplementedRunner,
+    Artifact, NodeContext, NodeError, NodeInputs, NodeOutputs, NodeRunner,
 };
 use crate::storage::single_output_path;
 use crate::types::{DataType, NodeKind, ScalarType};
 
-/// Dispatches each node kind to its implementation. Kinds without one yet fail with the
-/// standard "not implemented" message (see [`UnimplementedRunner`]).
+/// Dispatches each node kind to its implementation (every kind of the catalog has one).
 pub struct EngineRunner {
     pub db: PgPool,
     pub config: Arc<Config>,
@@ -50,21 +50,21 @@ impl EngineRunner {
         );
         let llm = LlmClient::new(
             http.clone(),
-            config.llm_base_url.clone(),
-            config.llm_api_key.clone(),
+            config.openrouter_base_url.clone(),
+            config.openrouter_api_key.clone(),
             config.llm_model.clone(),
             config.llm_effort.clone(),
         );
         let embedder = EmbeddingClient::new(
             http.clone(),
-            config.embedding_base_url.clone(),
-            config.embedding_api_key.clone(),
+            config.openrouter_base_url.clone(),
+            config.openrouter_api_key.clone(),
             config.embedding_model.clone(),
         );
         let tts = TtsClient::new(
             http.clone(),
-            config.tts_base_url.clone(),
-            config.tts_api_key.clone(),
+            config.openrouter_base_url.clone(),
+            config.openrouter_api_key.clone(),
             config.tts_model.clone(),
             config.tts_voice.clone(),
         );
@@ -126,8 +126,11 @@ impl NodeRunner for EngineRunner {
                 let font_dir = self.config.slide_font_dir.clone();
                 async move { slide::run(&llm, &font_dir, &ctx, &inputs).await }.boxed()
             }
+            NodeKind::Fill => {
+                let llm = self.llm.clone();
+                async move { fill::run(&llm, &ctx, &inputs).await }.boxed()
+            }
             NodeKind::JsonInput => async move { json_input::run(&ctx).await }.boxed(),
-            _ => UnimplementedRunner.run(ctx, inputs),
         }
     }
 }

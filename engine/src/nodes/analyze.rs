@@ -1,4 +1,4 @@
-//! `analyze` node: describes an image with Claude.
+//! `analyze` node: describes an image with the LLM.
 
 use super::{read_image, write_md};
 use crate::clients::llm::{LlmClient, LlmRequest, UserBlock};
