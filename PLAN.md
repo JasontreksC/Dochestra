@@ -51,6 +51,7 @@
 ### In Progress (진행 중)
 | 티켓 ID | 마일스톤 | 상세 작업 목표 | 담당 워커 | 대상 경로 | 검증 명령어 (`verify_cmd`) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
+| T-320 | M3 | slide 폰트 서브셋(PDF ≤300KB) + common.rs backoff 테스트 벽시계 단언 제거 | w1-kobe | `engine/Cargo.*`, `engine/src/nodes/slide/**`, `engine/tests/slide.rs`, `engine/src/clients/common.rs`(테스트만) | engine 표준 검증·PDF 크기 |
 | T-313 | M3 | analyze 실사용 품질 보강(차트·표 이미지·사진·텍스트 많은 이미지·작은 이미지, 수치 판독 정확도, 한국어 구조화) | w2-fine | `engine/src/nodes/analyze.rs`, `engine/tests/llm_nodes.rs`, `scripts/live/**`(slide_check.sh 제외), `fixtures/live/**` | live-nodes --only analyze + engine 표준 검증 |
 
 ### Blocked (보류 / 설계 조정 또는 외부 확인 필요)
@@ -62,8 +63,6 @@
 ### Pending (대기 중)
 | 티켓 ID | 마일스톤 | 트랙 | 상세 작업 목표 | 선행 티켓 | 대상 경로 | 검증 조건 및 명령어 (`verify_cmd`) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| T-321 | M2(보수) | R | executor 병렬 실행 테스트(independent_branches_run_in_parallel) 부하 시 간헐 실패 → 타이밍 비의존(동시 실행 카운터·배리어) 방식으로 견고화 | - | `engine/src/executor/mod.rs`(테스트) | 부하 중 20회 반복 통과 |
-| T-320 | M3 | R | slide PDF 폰트 서브셋(1.5MB → 축소) | T-314 | `engine/Cargo.toml`, `engine/src/nodes/slide/render.rs` | PDF 크기·글리프 |
 
 ### Done (검수 완료)
 | 티켓 ID | 마일스톤 | 완료된 작업 요약 | 실행한 검증 명령어 및 결과 | 완료 일자 |
@@ -113,6 +112,7 @@
 | T-314 | M3 | slide 품질 보강: 대표 이미지 업스케일 상한 2.0(작은 이미지 깨짐 방지) + 비율 회귀 테스트 + scripts/live/slide_check.sh(PNG 렌더 점검) | 오케스트레이터: 깨끗한 worktree 에서 fmt·clippy·test 372·prepare 통과, 한글 슬라이드 7장 PNG 육안 확인(글리프·수치·차트 비율 정상). 관찰: 개요 슬라이드 내용 중복·희박(경미) | 2026-11-26 |
 | T-408 | M4 | RAG 노드 인스펙터 챗봇: 실행 패널 선택 런/최근 성공 런에서 indexId 확보, 질의·답변·[n] 근거 배지·근거 목록, indexId 별 세션 기록, 대화 지우기, 한글 조합 입력 처리 | 오케스트레이터: web test 153·lint·typecheck·build 통과, 서브에이전트 실 API E2E(E2E_LIVE=1) 스크린샷 확인 — 답변 '482 million'·근거 2개. 사용자 스택 web 재배포·smoke PASS | 2026-11-26 |
 | T-317 | M3 | fill 품질 보강: 페이지 텍스트에서 필드·라디오 라벨 추출(labels.rs)→LLM 매핑 프롬프트에 포함(값 미전송 유지), 라디오 값→옵션 이름/라벨 매핑, 같은 이름 필드 전부 채움 + 폼 픽스처 3종 + scripts/live/fill_check.sh | 오케스트레이터: 깨끗한 worktree 에서 fmt·clippy·test 387·prepare 통과(1회차 executor 병렬 타이밍 테스트가 부하로 실패→재실행 3/3 통과, T-321 등록). 실 API 리포트: 4케이스 100%(9/9·9/9·9/9·15/15)·오매핑 0, 코드형 필드명 폼 22%→100% | 2026-11-26 |
+| T-321 | M2(보수) | executor 병렬 테스트를 Barrier 랑데부 방식으로 견고화(벽시계 임계값 제거) + 직렬 대조군 테스트 | 오케스트레이터: 깨끗한 worktree 에서 clippy·test 전체·executor 20회 반복 통과, prepare OK | 2026-11-26 |
 
 ---
 

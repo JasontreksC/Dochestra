@@ -337,8 +337,16 @@ mod tests {
         mode: Mode,
     }
 
+    /// Nodes that finish only once all of them are running at the same time.
+    struct Rendezvous {
+        nodes: Vec<String>,
+        barrier: Arc<tokio::sync::Barrier>,
+        timeout: Duration,
+    }
+
     #[derive(Default)]
     struct FakeRunner {
+        rendezvous: Option<Rendezvous>,
         behaviors: HashMap<String, Behavior>,
         calls: Mutex<HashMap<String, usize>>,
         spans: Mutex<HashMap<String, (Instant, Instant)>>,
@@ -354,6 +362,19 @@ mod tests {
                     mode,
                 },
             );
+            self
+        }
+
+        /// Makes `node_ids` wait for each other before they finish: they can only complete when
+        /// the executor runs them concurrently. A node that waits longer than `timeout` fails with a
+        /// clear message (so a serial executor fails the test instead of hanging it). Concurrency
+        /// is proven by this structure, never by measuring elapsed time.
+        fn rendezvous(mut self, node_ids: &[&str], timeout: Duration) -> Self {
+            self.rendezvous = Some(Rendezvous {
+                nodes: node_ids.iter().map(|id| (*id).to_owned()).collect(),
+                barrier: Arc::new(tokio::sync::Barrier::new(node_ids.len())),
+                timeout,
+            });
             self
         }
 
@@ -403,6 +424,19 @@ mod tests {
                         mode: Mode::Ok,
                     });
                 tokio::time::sleep(behavior.delay).await;
+                if let Some(gate) = this
+                    .rendezvous
+                    .as_ref()
+                    .filter(|g| g.nodes.contains(&ctx.node_id))
+                    && tokio::time::timeout(gate.timeout, gate.barrier.wait())
+                        .await
+                        .is_err()
+                {
+                    return Err(NodeError::Failed(format!(
+                        "node {} never ran concurrently with {:?}",
+                        ctx.node_id, gate.nodes
+                    )));
+                }
 
                 let result = match behavior.mode {
                     Mode::Fail(message) => Err(NodeError::Failed(message.to_owned())),
@@ -666,18 +700,32 @@ mod tests {
 
     #[tokio::test]
     async fn independent_branches_run_in_parallel() {
-        let runner = FakeRunner::default()
-            .with("p1", 200, Mode::Ok)
-            .with("p2", 200, Mode::Ok);
-        let started = Instant::now();
+        // p1 and p2 wait for each other, so both can only finish if the executor runs them at the
+        // same time. A serial executor stalls at the first one and fails after the rendezvous timeout
+        // (generous: it only matters when the test is about to fail anyway).
+        let runner = FakeRunner::default().rendezvous(&["p1", "p2"], Duration::from_secs(5));
         let (outcome, runner, _observer, _data) = run(&two_branches(), runner).await;
-        let elapsed = started.elapsed();
 
-        assert_eq!(outcome.status, RunStatus::Succeeded);
+        assert_eq!(outcome.status, RunStatus::Succeeded, "{:?}", outcome.nodes);
         let (s1, e1) = runner.span("p1");
         let (s2, e2) = runner.span("p2");
         assert!(s1 < e2 && s2 < e1, "branch spans must overlap");
-        assert!(elapsed < Duration::from_millis(350), "took {elapsed:?}");
+    }
+
+    /// Control for the test above: nodes that depend on each other cannot meet, and the rendezvous
+    /// reports that clearly instead of hanging or passing.
+    #[tokio::test]
+    async fn the_rendezvous_fails_for_nodes_that_cannot_run_together() {
+        let runner = FakeRunner::default().rendezvous(&["b", "p"], Duration::from_millis(100));
+        let (outcome, _runner, observer, _data) = run(&chain(), runner).await;
+
+        assert_eq!(outcome.status, RunStatus::Failed);
+        assert_eq!(outcome.nodes["b"], NodeStatus::Failed);
+        let message = observer
+            .update_of("b", NodeStatus::Failed)
+            .error
+            .expect("a failed node carries its message");
+        assert!(message.contains("never ran concurrently"), "{message}");
     }
 
     #[tokio::test]
