@@ -8,12 +8,19 @@ from fastapi.testclient import TestClient
 HEALTH_TIMEOUT_S = 300
 
 
+def expected_device() -> str:
+    """Default EXTRACTOR_DEVICE=auto: CUDA when a GPU is visible (e.g. the T4 host)."""
+    import torch
+
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+
 def wait_ready(client: TestClient) -> None:
     deadline = time.monotonic() + HEALTH_TIMEOUT_S
     while time.monotonic() < deadline:
         r = client.get("/health")
         if r.status_code == 200:
-            assert r.json() == {"status": "ok"}
+            assert r.json() == {"status": "ok", "device": expected_device()}
             return
         assert r.status_code == 503
         assert r.json() == {"status": "loading"}

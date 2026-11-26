@@ -23,9 +23,17 @@ services:
     environment:
       DATA_DIR: /data
       EXTRACTOR_OCR: ${EXTRACTOR_OCR:-false}
+      EXTRACTOR_DEVICE: ${EXTRACTOR_DEVICE:-auto}
     volumes:
       - data:/data
     mem_limit: 4g
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     healthcheck:
       test:
         - CMD

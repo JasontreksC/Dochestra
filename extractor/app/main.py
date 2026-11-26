@@ -20,20 +20,42 @@ from app.schemas import ExtractRequest, ExtractResponse, HealthResponse
 log = logging.getLogger("extractor")
 
 
+def _configure_logging() -> None:
+    """uvicorn only configures its own loggers; give ours a stderr handler at INFO."""
+    for name in ("extractor", "app"):
+        logger = logging.getLogger(name)
+        if not logger.handlers:
+            handler = logging.StreamHandler()
+            handler.setFormatter(logging.Formatter("%(levelname)s:     %(name)s: %(message)s"))
+            logger.addHandler(handler)
+            logger.setLevel(logging.INFO)
+
+
+_configure_logging()
+
+
 def create_app(data_dir: Path | None = None) -> FastAPI:
     base = (data_dir or Path(os.environ.get("DATA_DIR", "/data"))).resolve()
 
     ready = threading.Event()
     state: dict[str, DocumentConverter] = {}
+    device: dict[str, conv.Device] = {}
     semaphore = asyncio.Semaphore(1)
 
     def load() -> None:
         try:
-            c = conv.build_converter()
+            dev = conv.resolve_device()
+        except conv.DeviceError as exc:
+            log.error("extractor device selection failed: %s", exc)
+            return
+        log.info("extractor device: %s", dev)
+        try:
+            c = conv.build_converter(dev)
             conv.warm_up(c)
             state["converter"] = c
+            device["device"] = dev
             ready.set()
-            log.info("docling converter ready")
+            log.info("docling converter ready (device=%s)", dev)
         except Exception:
             log.exception("docling converter initialization failed")
 
@@ -47,7 +69,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.get("/health", response_model=HealthResponse)
     async def health() -> Response:
         if ready.is_set():
-            return JSONResponse({"status": "ok"})
+            return JSONResponse({"status": "ok", "device": device["device"]})
         return JSONResponse({"status": "loading"}, status_code=503)
 
     @app.post("/extract", response_model=ExtractResponse, response_model_by_alias=True)

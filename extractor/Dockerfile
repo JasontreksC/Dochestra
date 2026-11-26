@@ -5,6 +5,11 @@ COPY --from=ghcr.io/astral-sh/uv:0.13.9 /uv /uvx /bin/
 
 # No apt packages are required: docling pulls opencv-python-headless and torch bundles its
 # own runtime libs (verified by importing docling and converting a PDF in this image).
+# CUDA (T-117): torch comes from the cu134 wheel index, which pulls the CUDA runtime as
+# nvidia-* wheels, so no CUDA base image is needed. Only the host driver is required; the
+# NVIDIA container runtime mounts it when the container is started with a GPU
+# (`--gpus all` / compose device reservation). Without a GPU, EXTRACTOR_DEVICE=auto
+# falls back to CPU.
 
 ENV UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
@@ -14,7 +19,10 @@ ENV UV_LINK_MODE=copy \
     PYTHONUNBUFFERED=1 \
     DATA_DIR=/data \
     DOCLING_ARTIFACTS_PATH=/opt/docling-models \
-    HF_HUB_OFFLINE=1
+    HF_HUB_OFFLINE=1 \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+    EXTRACTOR_DEVICE=auto
 
 WORKDIR /app
 

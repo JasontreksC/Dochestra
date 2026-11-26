@@ -4,7 +4,10 @@ import json
 import logging
 import os
 from pathlib import Path
+from typing import Literal
 
+import torch
+from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
 from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
@@ -18,13 +21,48 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return os.environ.get(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def build_converter() -> DocumentConverter:
+Device = Literal["cuda", "cpu"]
+
+DEVICE_ENV = "EXTRACTOR_DEVICE"
+_DEVICE_CHOICES = ("auto", "cuda", "cpu")
+
+
+class DeviceError(RuntimeError):
+    """EXTRACTOR_DEVICE is invalid or the requested device is not available."""
+
+
+def resolve_device(value: str | None = None) -> Device:
+    """Resolve EXTRACTOR_DEVICE (``auto`` | ``cuda`` | ``cpu``) to a concrete device.
+
+    ``auto`` picks CUDA when ``torch.cuda.is_available()`` and falls back to CPU with a
+    warning. ``cuda`` without a usable GPU raises :class:`DeviceError`.
+    """
+    raw = os.environ.get(DEVICE_ENV, "auto") if value is None else value
+    choice = raw.strip().lower() or "auto"
+    if choice not in _DEVICE_CHOICES:
+        raise DeviceError(
+            f"invalid {DEVICE_ENV}={raw!r}; expected one of {', '.join(_DEVICE_CHOICES)}"
+        )
+    if choice == "cpu":
+        return "cpu"
+    if torch.cuda.is_available():
+        return "cuda"
+    if choice == "cuda":
+        raise DeviceError(f"{DEVICE_ENV}=cuda but torch.cuda.is_available() is False")
+    log.warning("%s=auto: CUDA is not available, falling back to CPU", DEVICE_ENV)
+    return "cpu"
+
+
+def build_converter(device: Device = "cpu") -> DocumentConverter:
     """Create the Docling converter. Model weights are located via DOCLING_ARTIFACTS_PATH."""
     options = PdfPipelineOptions(
         do_ocr=_env_flag("EXTRACTOR_OCR", False),
         do_table_structure=True,
         generate_picture_images=True,
         images_scale=2.0,
+        accelerator_options=AcceleratorOptions(
+            device=AcceleratorDevice.CUDA if device == "cuda" else AcceleratorDevice.CPU
+        ),
     )
     return DocumentConverter(
         format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=options)}

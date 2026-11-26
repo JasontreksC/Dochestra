@@ -51,7 +51,6 @@
 ### In Progress (진행 중)
 | 티켓 ID | 마일스톤 | 상세 작업 목표 | 담당 워커 | 대상 경로 | 검증 명령어 (`verify_cmd`) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| T-117 | M1(보수) | **[사용자 요청]** extractor Docling GPU(CUDA) 가속: CUDA torch, AcceleratorOptions(device), compose GPU 예약, /health 에 device 노출, CPU 폴백 | orch 서브에이전트 | `extractor/**`, `docker-compose.yml`(extractor 서비스만) | extractor 표준 검증 + 컨테이너 cuda 확인 + CPU/GPU 변환 시간 비교 + verify-stack --e2e |
 | T-307 | M3 | fill 노드: AcroForm 필드 인식 → 키 매칭(정확/정규화 → 남은 키는 Claude 매핑) → 값 채움(텍스트·체크박스·선택) → PDF + 리포트 | w1-kobe | `engine/src/nodes/{mod,fill}.rs`(필요 시 fill/ 하위), `engine/Cargo.{toml,lock}`, `engine/tests/{fill.rs,fixtures/**}` | engine 표준 검증 + 채워진 PDF 필드값 검사 |
 
 ### Blocked (보류 / 설계 조정 또는 외부 확인 필요)
@@ -100,6 +99,7 @@
 | T-306 | M3 | slide 노드: Claude 구성 JSON(검증·1회 재요청) → printpdf 16:9 렌더(나눔고딕 OFL 내장, 표지·본문·이미지 슬라이드, 페이지 번호) | 오케스트레이터 재실행: cargo test 306(slide 14), prepare --check·docker build OK, 컨테이너 폰트 존재 확인. 사용자 스택 engine 재배포·smoke PASS | 2026-11-26 |
 | T-502 | M5 | README(소개·아키텍처·빠른 시작·환경 변수(OpenRouter)·사용법·노드 표·검증·문서 지도·제약) | 오케스트레이터: 상대 링크 전부 존재, env 표 CONTEXT §6.1 개정본 일치 확인. 번들 업로드 절차(4번)는 T-407 반영 시 갱신 | 2026-11-26 |
 | T-407 | M4(보수) | 번들 노드 'PDF 업로드' 버튼·드롭존(번들 자동 생성·선택), 미선택 안내 문구, README 4번 갱신 | 오케스트레이터 재실행: web test 139·lint·typecheck·build 통과. 사용자 스택 web 재배포 후 http://<서버IP> 에서 버튼 노출·업로드·번들 자동 생성·파일 목록 확인, 에러 0 | 2026-11-26 |
+| T-117 | M1(보수) | extractor Docling GPU(CUDA 13.4 torch, AcceleratorOptions, EXTRACTOR_DEVICE auto/cuda/cpu, /health device, compose GPU 예약) | 오케스트레이터: ruff·pytest 31(실 GPU 변환)·컨테이너 cuda(Tesla T4) 확인, 사용자 스택 extractor 재배포 → health device=cuda, smoke PASS. 측정(서브에이전트): 20쪽 PDF CPU 88s → GPU 11s(7.8배). 이미지 21.6GB(uv 캐시 6GB 잔존) — 축소는 T-118 | 2026-11-26 |
 
 ---
 

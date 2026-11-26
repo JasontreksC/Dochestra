@@ -23,3 +23,4 @@ class ExtractResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     status: Literal["ok", "loading"]
+    device: Literal["cuda", "cpu"] | None = None  # present when status == "ok"
