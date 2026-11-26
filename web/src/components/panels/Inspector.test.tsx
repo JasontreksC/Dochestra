@@ -92,10 +92,29 @@ describe('Inspector', () => {
     expect(params('j')).toEqual({ value: { b: 2 } })
   })
 
-  it('shows the engine-aligned params warning without blocking edits', () => {
+  it('hints at uploading instead of warning when a bundle node has no bundleId', () => {
     select('b')
     renderWithProviders(<Inspector />)
-    expect(screen.getByRole('alert')).toHaveTextContent('bundleId 가 올바른 UUID 가 아닙니다')
+    expect(screen.getByText('PDF 를 업로드하면 번들이 자동으로 만들어집니다')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'PDF 업로드' })).toBeInTheDocument()
+  })
+
+  it('still shows the engine-aligned warning for a malformed bundleId', () => {
+    act(() => store().updateNodeParams('b', { bundleId: 'abc' }))
+    select('b')
+    renderWithProviders(<Inspector />)
+    expect(screen.getAllByRole('alert').map((a) => a.textContent)).toContain(
+      'bundleId 가 올바른 UUID 가 아닙니다',
+    )
+    expect(screen.queryByText('PDF 를 업로드하면 번들이 자동으로 만들어집니다')).not.toBeInTheDocument()
+  })
+
+  it('shows the params warning for other kinds (non-blocking)', () => {
+    act(() => store().updateNodeParams('p', { index: -1 }))
+    select('p')
+    renderWithProviders(<Inspector />)
+    expect(screen.getByRole('alert')).toHaveTextContent('index 는 0 이상의 정수여야 합니다')
   })
 
   it('resets local editor state when the selection changes', () => {

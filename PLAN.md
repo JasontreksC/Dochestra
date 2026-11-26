@@ -36,6 +36,7 @@
 - **현재 단계**: `M3 마무리 / M5 진행` (2026-11-26) — 트랙 R은 T-307(fill) → T-309(OpenRouter 전환, 예약), 트랙 I는 T-502(README). fine hcom 재접속 완료.
 - **호스트 변경 기록**: 2026-11-26 w2-fine 이 Playwright chromium 실행을 위해 `sudo playwright install-deps chromium`(apt 시스템 패키지) 설치. 이후 sudo 를 쓰는 호스트 변경은 사전 승인 필요(CONTEXT §6.2).
 - **운영 메모**: 08:20경 오케스트레이터 hcom 세션이 pty 종료로 끊겨 T-202·T-113 보고가 유실됨 → 재연결 후 이벤트 로그에서 복구·검수.
+- **디스크 고갈 (2026-11-26 11:2x)**: 루트 77G 중 100% 사용(361MB) → 링커 Bus error. 오케스트레이터 임시 검증 빌드(4.3G) 등 삭제로 32GB 확보. 원인: 동시 빌드(엔진 다중 target, CUDA 이미지, docker build cache 22GB). 규칙: 검증용 별도 CARGO_TARGET_DIR 금지, 빌드 전 `df -h /` 확인. T-307 검수는 T-309 와 합쳐 진행.
 - **교훈 (T-406)**: 검증을 localhost(보안 컨텍스트)로만 해서 사용자의 http://서버IP 접속 환경 버그를 놓침 → UI E2E 에 비-localhost 출처 테스트 상시 포함.
 - **호스트 재부팅 (2026-11-26 10:08)**: 오케스트레이터·워커 세션 종료, /tmp 초기화. 작업 트리 무손상. 10:17 사용자 스택을 승인 이미지(engine T-308 검증 빌드, web 현 트리)로 재배포·smoke PASS. 워커 세션은 사용자가 재개(limo→kobe, pita→fine)했으나 hcom 신원 미복구 상태.
 - **사고 (2026-11-26 08:47)**: 사용자·워커의 동시 `docker compose up`으로 db 컨테이너 기동 실패. 오케스트레이터가 스택 재기동(4서비스 healthy, smoke PASS)으로 복구, 재발 방지 T-114 긴급 할당.
@@ -50,7 +51,7 @@
 ### In Progress (진행 중)
 | 티켓 ID | 마일스톤 | 상세 작업 목표 | 담당 워커 | 대상 경로 | 검증 명령어 (`verify_cmd`) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| T-407 | M4(보수) | **[사용자 차단 UX]** 번들 노드 PDF 업로드 진입: 항상 보이는 'PDF 업로드' 버튼(번들 없으면 자동 생성 후 업로드), PDF 드래그 앤 드롭 영역, 기본 file input 숨김·스타일, 번들 미선택 시 친화 안내 | w2-fine | `web/src/components/panels/{BundlePicker,Inspector}.tsx`, 테스트, `web/e2e/editor.spec.ts` | web 표준 검증 + verify-stack --ui |
+| T-117 | M1(보수) | **[사용자 요청]** extractor Docling GPU(CUDA) 가속: CUDA torch, AcceleratorOptions(device), compose GPU 예약, /health 에 device 노출, CPU 폴백 | orch 서브에이전트 | `extractor/**`, `docker-compose.yml`(extractor 서비스만) | extractor 표준 검증 + 컨테이너 cuda 확인 + CPU/GPU 변환 시간 비교 + verify-stack --e2e |
 | T-307 | M3 | fill 노드: AcroForm 필드 인식 → 키 매칭(정확/정규화 → 남은 키는 Claude 매핑) → 값 채움(텍스트·체크박스·선택) → PDF + 리포트 | w1-kobe | `engine/src/nodes/{mod,fill}.rs`(필요 시 fill/ 하위), `engine/Cargo.{toml,lock}`, `engine/tests/{fill.rs,fixtures/**}` | engine 표준 검증 + 채워진 PDF 필드값 검사 |
 
 ### Blocked (보류 / 설계 조정 또는 외부 확인 필요)
@@ -98,6 +99,7 @@
 | T-406 | M4(보수) | 노드 배치 UX: 팔레트 드래그 앤 드롭, 클릭 추가 시 겹침 회피·자동 선택·뷰 이동, fitView maxZoom 1 + **비보안 컨텍스트(http://서버IP)에서 crypto.randomUUID 부재로 노드/엣지 추가 불가 버그 수정**(lib/ids.ts newId 폴백) | 오케스트레이터 재실행: web test 130·lint·typecheck·build 통과. 사용자 스택 web 재배포 후 http://<서버IP>(isSecureContext=false)에서 클릭 추가 2·드롭 1·엣지 연결·인스펙터 표시·겹침 없음·페이지 에러 0 확인 | 2026-11-26 |
 | T-306 | M3 | slide 노드: Claude 구성 JSON(검증·1회 재요청) → printpdf 16:9 렌더(나눔고딕 OFL 내장, 표지·본문·이미지 슬라이드, 페이지 번호) | 오케스트레이터 재실행: cargo test 306(slide 14), prepare --check·docker build OK, 컨테이너 폰트 존재 확인. 사용자 스택 engine 재배포·smoke PASS | 2026-11-26 |
 | T-502 | M5 | README(소개·아키텍처·빠른 시작·환경 변수(OpenRouter)·사용법·노드 표·검증·문서 지도·제약) | 오케스트레이터: 상대 링크 전부 존재, env 표 CONTEXT §6.1 개정본 일치 확인. 번들 업로드 절차(4번)는 T-407 반영 시 갱신 | 2026-11-26 |
+| T-407 | M4(보수) | 번들 노드 'PDF 업로드' 버튼·드롭존(번들 자동 생성·선택), 미선택 안내 문구, README 4번 갱신 | 오케스트레이터 재실행: web test 139·lint·typecheck·build 통과. 사용자 스택 web 재배포 후 http://<서버IP> 에서 버튼 노출·업로드·번들 자동 생성·파일 목록 확인, 에러 0 | 2026-11-26 |
 
 ---
 

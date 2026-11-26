@@ -119,7 +119,10 @@ export default function Inspector() {
   if (!node) return shell(<p className="text-sm text-slate-500">노드를 선택하세요</p>)
   if (!spec) return shell(<p className="text-sm text-red-600">알 수 없는 노드</p>)
 
-  const warning = validateParams(node.data.kind, node.data.params)
+  const bundleIdValue = asRecord(node.data.params).bundleId
+  const needsUpload =
+    node.data.kind === 'bundle' && (bundleIdValue === undefined || bundleIdValue === null || bundleIdValue === '')
+  const warning = needsUpload ? null : validateParams(node.data.kind, node.data.params)
 
   return shell(
     <div className="space-y-4">
@@ -156,6 +159,9 @@ export default function Inspector() {
           params={node.data.params}
           onChange={(p) => updateNodeParams(node.id, p)}
         />
+        {needsUpload && (
+          <p className="mt-2 text-xs text-slate-500">PDF 를 업로드하면 번들이 자동으로 만들어집니다</p>
+        )}
         {warning && (
           <p role="alert" className="mt-2 text-xs text-amber-600">
             {warning}

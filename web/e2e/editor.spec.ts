@@ -1,4 +1,5 @@
 import os from 'node:os'
+import fs from 'node:fs'
 import path from 'node:path'
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test'
 
@@ -125,7 +126,7 @@ test('palette: click-adding three nodes yields non-overlapping, visible nodes', 
 
 test('editor: create, wire, save, reload, run, and report issues', async ({ page }) => {
   const wfName = `${RUN_TAG}-flow`
-  const bundleName = `${RUN_TAG}-bundle`
+  const bundleName = `${RUN_TAG}-sample`
 
   await test.step('1. landing -> editor, create a workflow from the sidebar', async () => {
     await page.goto('/')
@@ -169,11 +170,17 @@ test('editor: create, wire, save, reload, run, and report issues', async ({ page
 
   await test.step('4. inspector: create + upload a bundle, mark extract as output', async () => {
     await bundleNode.locator('span.font-semibold').click()
-    await page.getByLabel('새 번들 이름').fill(bundleName)
-    await page.getByRole('button', { name: '새 번들' }).click()
+    // No bundle yet: a prominent upload button is shown right away and the upload creates one.
+    await expect(page.getByText('PDF 를 업로드하면 번들이 자동으로 만들어집니다')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'PDF 업로드' })).toBeVisible()
+    // The file input is hidden behind the button; the name carries RUN_TAG so cleanup finds the bundle.
+    await page.getByLabel('PDF 파일 선택').setInputFiles({
+      name: `${bundleName}.pdf`,
+      mimeType: 'application/pdf',
+      buffer: fs.readFileSync(SAMPLE_PDF),
+    })
+    await expect(page.getByText(`${bundleName}.pdf`)).toBeVisible()
     await expect(page.getByRole('combobox', { name: '번들' })).toContainText(bundleName)
-    await page.getByLabel('PDF 업로드').setInputFiles(SAMPLE_PDF)
-    await expect(page.getByText('sample.pdf')).toBeVisible()
 
     await extractNode.locator('span.font-semibold').click()
     await page.getByRole('checkbox', { name: '출력 노드로 지정' }).check()
