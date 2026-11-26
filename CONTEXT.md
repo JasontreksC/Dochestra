@@ -18,7 +18,7 @@ RFP 원문만으로는 타입 체계가 닫히지 않는 지점이 있어 아래
 | D-3 | **소스 노드 추가** `json_input`(입력 없음→JSON): 사용자가 캔버스에서 편집한 JSON 값을 출력한다. | `translate`(설정)·`fill`(키-값)의 JSON 입력을 공급할 노드가 없음 | 확정 (2026-11-26 사용자) |
 | D-4 | **선택 입력 소켓**: `SocketSpec.required=false`인 소켓은 비어 있어도 실행 가능. 현재 `summary.images`만 선택 소켓. | RFP 1.5 "이미지 리스트도 넣어 요약에 보탤 수 **있다**" | 확정 (2026-11-26 사용자) |
 | D-5 | **엄격 타입 매칭**: 엣지는 `DataType`이 완전히 같을 때만 허용(`LIST[T]`↔`T` 자동 변환·자동 map 없음). | RFP 1.6 "소켓 타입이 맞지 않으면 실행하지 않는다" | 확정 |
-| D-6 | **외부 공급자**: LLM = Anthropic Claude(Messages API, 비전 포함 — translate/analyze/summary/slide), 임베딩 = OpenAI `text-embedding-3-small`(1536차원, `rag_chunks.embedding vector(1536)` 유지), TTS = OpenAI TTS(mp3 출력). 상세 클라이언트 명세는 M3 티켓에서 확정. | RFP 2.2 "외부 API"로만 명시 | 확정 (2026-11-26 사용자) |
+| D-6 | **외부 공급자 (2026-11-26 사용자 변경)**: 모든 외부 AI 호출을 **OpenRouter**(OpenAI 호환 API, `https://openrouter.ai/api/v1`) 하나로 통합. 키 `OPENROUTER_API_KEY` 하나, 모델은 env: LLM `meta/muse-ember`(이미지 입력 가능), 임베딩 `baai/bge-m3`(**1024차원**), TTS `google/gemini-3.8-flash-lite-tts`(mp3 미지원 → pcm 수신 후 엔진에서 MP3 인코딩). 기존 Anthropic Messages API 직접 호출 계약(§4.3 구판)은 폐기. | RFP 2.2 "외부 API"로만 명시 | 확정 (사용자 .env 설정) |
 
 ---
 
@@ -303,19 +303,15 @@ pub enum RunEvent {
 - 엔진 측 클라이언트 타임아웃: `/extract` 15분, `/health` 5초.
 - **구현 확정 사항 (T-111)**: Docling 2.153.0, CPU torch 2.15.0. 모델(layout, tableformer, rapidocr, 약 731MB)은 이미지 빌드 시 `docling-tools models download ... -o /opt/docling-models`로 내장, 런타임 env `DOCLING_ARTIFACTS_PATH=/opt/docling-models`, `HF_HUB_OFFLINE=1` (네트워크 없이 기동 확인). 기동~healthy 약 25초, 샘플 변환 시 RSS 약 1GiB. 이미지에 curl 없음 → compose healthcheck는 `python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"` 형태로 수행.
 
-### 4.3. `engine` -> 외부 API (D-6 확정, T-303~)
-- **Claude (LLM)**: Rust 공식 SDK가 없으므로 reqwest raw HTTP. `POST {LLM_BASE_URL}/v1/messages`, 헤더 `x-api-key: {LLM_API_KEY}`, `anthropic-version: 2026-10-21`, `content-type: application/json`, `anthropic-beta: server-side-fallback-2026-07-01`.
-  - 본문: `model`(기본 `claude-opus-5-5`), `max_tokens: 16000`(비스트리밍), `system`, `messages`, `output_config: {effort}`(기본 `high`), `fallbacks: "default"`. **보내지 말 것**: `thinking`(Opus 5.5 는 항상 adaptive — `disabled`/`budget_tokens` 는 400), `temperature`/`top_p`/`top_k`(400), assistant prefill(400), 강제 `tool_choice`.
-  - **요청 크기 상한(T-308)**: API 요청 한도(32MB) 대비 여유를 두고, 엔진이 만드는 요청 본문 추정 크기(텍스트 바이트 + 이미지 base64 길이)는 **30 MiB 이하**로 유지한다. summary 는 이미지를 순서대로 넣다가 상한에 닿으면 나머지를 제외하고 결과 끝에 제외 주석을 덧붙인다. 텍스트만으로 상한 초과 시 노드 실패('문서가 너무 커서 LLM 요청 한도(30MiB)를 넘습니다').
-  - 이미지: user content 에 `{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":<b64>}}` 를 텍스트 블록 앞에.
-  - 응답: `content[]` 중 `type=="text"` 블록만 이어붙임(thinking·fallback 블록 무시). `stop_reason`: `end_turn` 정상, `refusal` → 노드 실패('LLM 이 요청을 거절했습니다 ({stop_details.category})'), `max_tokens` → 노드 실패('LLM 출력이 최대 길이에 도달했습니다').
-  - 오류: 429·500·502·503·529·연결 오류는 최대 3회 재시도(지수 백오프 1s/2s/4s, `retry-after` 헤더 우선), 그 외 4xx 는 즉시 실패 — 메시지는 응답 `error.message`.
-- **OpenAI 임베딩 (T-304)**: `POST {EMBEDDING_BASE_URL}/v1/embeddings`, 헤더 `Authorization: Bearer {EMBEDDING_API_KEY}`, 본문 `{ model, input: [문자열...], encoding_format: "float" }`, 응답 `data[].{index, embedding}` (index 로 정렬). 모델 기본 `text-embedding-3-small`, 차원 **1536 고정**(다르면 오류). 요청당 최대 96개·총 200,000자. 오류 본문 `{error:{message}}`. 재시도 규칙은 Claude 와 동일(429·5xx·연결 오류 3회).
-- **OpenAI TTS (T-305)**: `POST {TTS_BASE_URL}/v1/audio/speech`, 헤더 `Authorization: Bearer {TTS_API_KEY}`, 본문 `{ model, input, voice, response_format: "mp3" }`, 응답 바이너리 MP3. 기본 모델 `tts-1`, 기본 음성 `alloy`. 요청당 input 최대 4000자 — 초과 텍스트는 문장 경계로 분할해 순차 합성 후 MP3 바이트를 순서대로 이어붙인다.
-- **voice 노드**: md + images(LIST[JPG]) → Claude 로 한국어 구어체 해설 대본 생성(마크다운·기호 없이 문장만, 약 1500~2500자, 이미지는 summary 와 같은 20개·5MiB·30MiB 예산 규칙) → `_work/script.txt` 저장 → TTS → `mp3.mp3`.
+### 4.3. `engine` -> 외부 API — OpenRouter (D-6 개정, T-309~)
+- **공통**: 베이스 `{OPENROUTER_BASE_URL}`(기본 `https://openrouter.ai/api/v1`), 헤더 `Authorization: Bearer {OPENROUTER_API_KEY}`, `Content-Type: application/json`, 선택 헤더 `X-Title: Dochestra`. 키 미설정 시 해당 노드만 실패('OPENROUTER_API_KEY 가 설정되지 않았습니다'), 엔진은 기동. 오류 본문 `{error:{message, code}}`. 재시도: 429·500·502·503·연결 오류 3회(1s/2s/4s, retry-after 우선), 타임아웃 미재시도. 키·Authorization 값은 로그/오류 메시지에 절대 노출 금지(clients/common.rs).
+- **LLM**: `POST /chat/completions` 본문 `{ model: LLM_MODEL, messages: [{role:"system",content}, {role:"user",content:[{type:"text",text}, {type:"image_url",image_url:{url:"data:image/jpeg;base64,<b64>"}}...]}], max_tokens: 16000, reasoning: {effort: LLM_EFFORT} }` (기본 모델 `meta/muse-ember`, effort 기본 `medium`; 이미지 파트는 텍스트 앞). 응답 `choices[0].message.content`(문자열; 배열이면 text 파트 결합). `finish_reason`: `stop` 정상, `length` → 'LLM 출력이 최대 길이에 도달했습니다', 내용이 비거나 null → 'LLM 응답이 비어 있습니다', `message.refusal` 존재 → 'LLM 이 요청을 거절했습니다'. 요청 크기 상한 30MiB 규칙 유지.
+- **임베딩**: `POST /embeddings` `{ model: EMBEDDING_MODEL, input: [...] }` → `data[].{index, embedding}`. 기본 `baai/bge-m3`, **차원 1024 고정**(DB `vector(1024)`, 다르면 오류). 배치 96개/200,000자 유지.
+- **TTS**: `POST /audio/speech` `{ model: TTS_MODEL, input, voice: TTS_VOICE, response_format: "pcm" }` → 응답 `audio/pcm;rate=<Hz>;channels=<n>` 16-bit LE 원시 PCM(관측: 24000Hz mono). 청크(최대 4000자, 문장 경계)별 PCM 을 순서대로 이어 붙인 뒤 **엔진이 한 번에 MP3 로 인코딩**(rate/channels 는 응답 헤더에서 파싱, 청크 간 불일치 시 오류). 기본 모델 `google/gemini-3.8-flash-lite-tts`, 기본 음성 `Kore`(OpenAI 음성명 `alloy` 등은 이 모델에서 400).
+- **RAG 노드 출력 JSON·RAG 질의 API**: 형식 동일(§ 이전 정의 유지), 단 임베딩 차원 1024, 답변 생성은 위 LLM 사용.
 - **RAG 노드 출력 JSON (`api` 소켓)**: `{ "type": "rag_api", "indexId": "<uuid>", "method": "POST", "endpoint": "/api/rag/<indexId>/query", "request": { "question": "string", "topK": "number (선택, 기본 5, 1~20)" }, "chunkCount": N, "embeddingModel": "..." }`
-- **RAG 질의 (`POST /api/rag/{indexId}/query`)**: question 1~2000자, topK 1~20(기본 5) 위반 400 / 인덱스 없음 404 / 질문 임베딩 → pgvector 코사인 거리(`<=>`) 상위 topK → score = 1 - distance → Claude 에 검색 청크를 [번호] 와 함께 넣어 답변 생성(질문 언어로, 제공 문맥 밖 정보 금지, 근거 [n] 표기, 관련 내용 없으면 그렇다고 답함) → `RagQueryResponse`. 임베딩/LLM 실패·키 미설정 → 502 UPSTREAM.
-
+- **RAG 질의 (`POST /api/rag/{indexId}/query`)**: question 1~2000자, topK 1~20(기본 5) 위반 400 / 인덱스 없음 404 / 질문 임베딩 → pgvector 코사인 거리 상위 topK → score = 1 - distance → LLM 에 [번호] 청크와 질문 → `RagQueryResponse`. 임베딩/LLM 실패·키 미설정 → 502 UPSTREAM.
+- **voice 노드**: md + images → LLM 해설 대본(한국어 구어체, 1500~2500자, 이미지 규칙 20개·5MiB·30MiB) → `_work/script.txt` → TTS(pcm) → MP3 인코딩 → `mp3.mp3`.
 ---
 
 ## 5. 데이터베이스 스키마 및 마이그레이션 규약
@@ -393,7 +389,7 @@ CREATE TABLE rag_chunks (
 CREATE INDEX rag_chunks_index_idx ON rag_chunks (index_id, chunk_index);
 CREATE INDEX rag_chunks_embedding_idx ON rag_chunks USING hnsw (embedding vector_cosine_ops);
 ```
-- `vector(1536)` 차원은 D-6 확정 시 변경될 수 있음 → 변경은 신규 마이그레이션으로만.
+- 임베딩 차원은 `0003` 마이그레이션으로 **1024** 로 변경(T-309). 변경은 신규 마이그레이션으로만.
 - 엔진 재시작 시 `status='running'`으로 남은 런은 `failed`로 정리한다(T-205): 해당 런의 `running` 노드 → `failed`(error '엔진 재시작으로 중단됨'), `pending` 노드 → `skipped`.
 
 ### `0002_node_runs_seq.sql` (T-205)
@@ -421,10 +417,11 @@ ALTER TABLE node_runs ADD COLUMN seq INTEGER NOT NULL DEFAULT 0;  -- ExecutionPl
 | `EXTRACTOR_HEALTH_TIMEOUT_SECS` | engine | `600` |
 | `EXTRACTOR_OCR` | extractor | `false` |
 | `WEB_PORT` | compose(web 호스트 포트) | `80` (검증 스택은 `18080`) |
-| `LLM_API_KEY` | engine | Anthropic API 키(미설정 시 LLM 노드만 실패, 엔진은 기동) |
-| `LLM_BASE_URL` / `LLM_MODEL` / `LLM_EFFORT` | engine | `https://api.anthropic.com` / `claude-opus-5-5` / `high` |
-| `EMBEDDING_API_KEY` / `EMBEDDING_BASE_URL` / `EMBEDDING_MODEL` | engine | OpenAI 키 / `https://api.openai.com` / `text-embedding-3-small` |
-| `TTS_API_KEY` / `TTS_BASE_URL` / `TTS_MODEL` / `TTS_VOICE` | engine | OpenAI 키 / `https://api.openai.com` / `tts-1` / `alloy` |
+| `OPENROUTER_API_KEY` | engine | OpenRouter 키(LLM·임베딩·TTS 공통, 미설정 시 해당 노드만 실패) |
+| `OPENROUTER_BASE_URL` | engine | `https://openrouter.ai/api/v1` |
+| `LLM_MODEL` / `LLM_EFFORT` | engine | `meta/muse-ember` / `medium` |
+| `EMBEDDING_MODEL` | engine | `baai/bge-m3` (1024차원 고정) |
+| `TTS_MODEL` / `TTS_VOICE` | engine | `google/gemini-3.8-flash-lite-tts` / `Kore` |
 
 ### 6.2. 로컬 개발 환경 규약 (호스트: Linux, 2 vCPU / 7 GiB RAM)
 - Rust: `rustup` stable을 사용자 홈에 설치(`~/.cargo`). 명령 실행 전 `source ~/.cargo/env`.
