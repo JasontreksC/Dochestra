@@ -3,6 +3,7 @@
     uv run --project extractor python fixtures/live/make_fixtures.py
 
 Outputs (next to this file):
+  handbook_en.pdf  English technical handbook, 20+ pages: tables, code listings, figures
   report_en.pdf  English annual report, 4 pages, 2 tables, 2 figures
   report_ko.pdf  Korean report, 3 pages, 1 table, 1 figure (NanumGothic from engine/assets/fonts)
 The facts in the text are what fixtures/live/questions.json asks about.
@@ -249,8 +250,83 @@ def korean(out: Path) -> None:
     doc.build(story)
 
 
+SENTENCES = [
+    "The fleet controller assigns every pick task to the nearest idle robot and re-plans the route when an aisle is blocked.",
+    "Operators can pause a zone from the dashboard, and the robots finish their current motion before they stop.",
+    "Battery health is sampled every ten seconds, and a robot below 20 percent charge returns to the nearest charging bay.",
+    "All firmware images are signed, and a robot refuses to boot an image whose signature does not match the fleet key.",
+    "The operating margin of a deployment depends mainly on the utilization of the robots during the night shift.",
+    "Customers receive a weekly report that lists throughput, error rates and the number of manual interventions.",
+    "A calibration run takes about twelve minutes and must be repeated after every mechanical replacement.",
+    "Log files are rotated daily and kept for ninety days unless the customer requests a longer retention period.",
+    "The vision system detects damaged packaging and routes the affected item to a manual inspection station.",
+    "Software updates are rolled out to five percent of the fleet first and to the remaining robots after 24 hours.",
+    "Aurora Robotics provides remote support around the clock, with a guaranteed first response time of 30 minutes.",
+    "Safety scanners reduce the speed of a robot to 0.3 meters per second when a person enters the warning field.",
+]
+
+SNIPPETS = [
+    "def assign(task, robots):\n    idle = [r for r in robots if r.state == 'idle']\n    best = min(idle, key=lambda r: r.distance_to(task.pick_point))\n    best.start(task)\n    return best",
+    "$ aurora-cli fleet status --zone B\nZONE  ROBOTS  IDLE  CHARGING\nB      42      11    5",
+    "{\n  \"zone\": \"B\",\n  \"max_speed\": 1.2,\n  \"charge_threshold\": 0.2\n}",
+]
+
+
+def handbook(out: Path) -> None:
+    """24-page handbook: 8 chapters of prose, a table, a code listing and (some) figures."""
+    ss = getSampleStyleSheet()
+    body = ss["BodyText"]
+    code = ParagraphStyle("code", fontName="Courier", fontSize=8.5, leading=11, backColor=colors.whitesmoke)
+    doc = SimpleDocTemplate(str(out), pagesize=A4, title="Aurora Robotics Fleet Handbook")
+    story: list = [
+        Paragraph("Aurora Robotics Fleet Handbook", ss["Title"]),
+        Paragraph(
+            "This handbook describes how to deploy, operate and maintain an Aurora Robotics "
+            "warehouse fleet. It is written for operations engineers.",
+            body,
+        ),
+    ]
+    chapter_names = [
+        "Fleet Architecture",
+        "Installation",
+        "Daily Operation",
+        "Safety",
+        "Maintenance",
+        "Monitoring and Reporting",
+        "Troubleshooting",
+        "Upgrades and Support",
+    ]
+    for c, name in enumerate(chapter_names, start=1):
+        story.append(PageBreak())
+        story.append(Paragraph(f"{c}. {name}", ss["Heading1"]))
+        for sec in range(1, 5):
+            story.append(Paragraph(f"{c}.{sec} {name}: topic {sec}", ss["Heading2"]))
+            for k in range(3):
+                text = " ".join(SENTENCES[(c * 5 + sec * 3 + k * 7 + i) % len(SENTENCES)] for i in range(5))
+                story.append(Paragraph(text, body))
+            if sec == 2:
+                rows = [["Parameter", "Default", "Unit"]] + [
+                    [f"zone_{c}_{i}", str(round(0.4 * i + c, 1)), "m/s" if i % 2 else "percent"] for i in range(1, 5)
+                ]
+                story += [Spacer(1, 3 * mm), grid(rows, "Helvetica", [50 * mm, 35 * mm, 35 * mm]), Spacer(1, 3 * mm)]
+            if sec == 3:
+                from reportlab.platypus import Preformatted
+
+                story += [Preformatted(SNIPPETS[c % len(SNIPPETS)], code), Spacer(1, 3 * mm)]
+            if c in (1, 4, 6) and sec == 4:
+                story.append(
+                    RLImage(
+                        bar_chart([40 + c * 3, 55, 31 + c, 72], ["A", "B", "C", "D"], f"Chart for chapter {c}"),
+                        width=100 * mm,
+                        height=59 * mm,
+                    )
+                )
+                story.append(Paragraph(f"Figure {c}. Example chart for chapter {c}.", body))
+    doc.build(story)
+
+
 if __name__ == "__main__":
-    for name, fn in [("report_en.pdf", english), ("report_ko.pdf", korean)]:
+    for name, fn in [("report_en.pdf", english), ("report_ko.pdf", korean), ("handbook_en.pdf", handbook)]:
         target = HERE / name
         fn(target)
         print(f"wrote {target} ({target.stat().st_size} bytes)")

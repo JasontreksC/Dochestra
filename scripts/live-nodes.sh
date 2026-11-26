@@ -64,6 +64,12 @@ fi
 # shellcheck disable=SC1091
 . "$ROOT/scripts/live/nodes.sh"
 
+result_files_of() { # result.json files for one node name (also its -<case> dirs)
+  local f
+  for f in "$OUT_DIR/$1/result.json" "$OUT_DIR/$1"-*/result.json; do [[ -f "$f" ]] && echo "$f"; done
+  return 0
+}
+
 # ---- gate: plan only unless LIVE_CONFIRM=1 ---------------------------------------------------
 if [[ "${LIVE_CONFIRM:-}" != 1 ]]; then
   echo "live-nodes: PLAN ONLY (no workflows are created, no paid calls are made)"
@@ -122,18 +128,27 @@ for n in "${NODES[@]}"; do
   echo "[live] === $n ($(live_estimate "$n"))"
   mkdir -p "$OUT_DIR/$n"
   if "live_node_$n"; then
-    echo "[live] $n: $(jq -r '"\(.status) \(.seconds)s"' "$OUT_DIR/$n/result.json" 2>/dev/null || echo ok)"
+    echo "[live] $n: done"
   else
     failed=$((failed + 1))
-    if [[ ! -f "$OUT_DIR/$n/result.json" ]]; then
+    if [[ -z "$(result_files_of "$n")" ]]; then
       mkdir -p "$OUT_DIR/$n/artifacts"
       live_write_result "$OUT_DIR/$n" "$n" failed 0 "시나리오 준비 실패(번들·워크플로 생성)" ""
     fi
-    echo "[live] $n: FAILED - $(jq -r .error "$OUT_DIR/$n/result.json")"
+    echo "[live] $n: FAILED - $(for f in $(result_files_of "$n"); do jq -r 'select(.status != "succeeded") | "\(.node): \(.error)"' "$f"; done | head -3 | tr '\n' ' ')"
   fi
 done
 
 # ---- SUMMARY.md ------------------------------------------------------------------------------
+# result.json of every selected node, including multi-case nodes such as translate-ko/-long/-settings
+result_files() {
+  local n f
+  for n in "${NODES[@]}"; do
+    for f in "$OUT_DIR/$n/result.json" "$OUT_DIR/$n"-*/result.json; do
+      [[ -f "$f" ]] && echo "$f"
+    done
+  done
+}
 cell() { tr '\r\n|' '  /' | tr -s ' '; }
 {
   echo "# 라이브 노드 검증 결과"
@@ -144,9 +159,8 @@ cell() { tr '\r\n|' '  /' | tr -s ' '; }
   echo
   echo "| 노드 | 상태 | 소요 시간 | 노드 상태 | 산출물 | 오류 | 미리보기 |"
   echo "| :--- | :--- | ---: | :--- | :--- | :--- | :--- |"
-  for n in "${NODES[@]}"; do
-    f="$OUT_DIR/$n/result.json"
-    [[ -f "$f" ]] || continue
+  for f in $(result_files); do
+    n=$(jq -r .node "$f")
     st=$(jq -r .status "$f")
     secs=$(jq -r '.seconds | tostring + "s"' "$f")
     pipe=$(jq -r .pipeline "$f" | cell)
@@ -154,6 +168,16 @@ cell() { tr '\r\n|' '  /' | tr -s ' '; }
     err=$(jq -r .error "$f" | cell)
     prev=$(jq -r .preview "$f" | cell)
     printf '| %s | %s | %s | %s | %s | %s | %s |\n' "$n" "$st" "$secs" "$pipe" "$arts" "$err" "$prev"
+  done
+  # translate checklist (translate_check.py) for every case that has one
+  for f in $(result_files); do
+    jq -e '.checks' "$f" >/dev/null 2>&1 || continue
+    echo
+    echo "### $(jq -r .node "$f") 점검표 (원문 $(jq -r .sourceChars "$f")자 → 번역 $(jq -r .translatedChars "$f")자)"
+    echo
+    echo "| 항목 | 결과 | 상세 |"
+    echo "| :--- | :--- | :--- |"
+    jq -r '.checks[] | "| \(.name) | \(if .ok then "✓" else "✗" end) | \(.detail | gsub("\\|"; "/")) |"' "$f"
   done
   echo
   echo "결과 파일: \`<node>/run.json\`(실행 상세), \`<node>/artifacts/\`(출력 노드 산출물), \`<node>/events.jsonl\`(SSE)."
@@ -165,7 +189,7 @@ echo "[live] summary: $OUT_DIR/SUMMARY.md"
 cat "$OUT_DIR/SUMMARY.md"
 
 # skipped nodes are not failures; anything else that is not succeeded is
-bad=$(for n in "${NODES[@]}"; do jq -r 'select(.status != "succeeded" and .status != "skipped") | .node' "$OUT_DIR/$n/result.json" 2>/dev/null; done | wc -l)
+bad=$(for f in $(result_files); do jq -r 'select(.status != "succeeded" and .status != "skipped") | .node' "$f" 2>/dev/null; done | wc -l)
 if ((bad > 0)); then
   echo "[live] $bad node(s) did not succeed" >&2
   exit 1

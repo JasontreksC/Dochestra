@@ -33,7 +33,7 @@
 
 ## 2. 현재 활성 상태 요약
 
-- **현재 단계**: `M3 완료 → 품질 보강 / M5` (2026-11-26) — 외부 AI 7종 실 API 동작 확인(커밋 38e6449). fine: T-311(translate 품질 보강)부터 노드별 순차, kobe: 대기(T-118 완료).
+- **현재 단계**: `M3 완료 → 품질 보강 / M5` (2026-11-26) — 외부 AI 7종 실 API 동작 확인(커밋 38e6449). fine: T-311(translate 품질 보강)부터 노드별 순차, kobe: T-315(rag 품질 보강) 병렬.
 - **호스트 변경 기록**: 2026-11-26 w2-fine 이 Playwright chromium 실행을 위해 `sudo playwright install-deps chromium`(apt 시스템 패키지) 설치. 이후 sudo 를 쓰는 호스트 변경은 사전 승인 필요(CONTEXT §6.2).
 - **운영 메모**: 08:20경 오케스트레이터 hcom 세션이 pty 종료로 끊겨 T-202·T-113 보고가 유실됨 → 재연결 후 이벤트 로그에서 복구·검수.
 - **디스크 고갈 (2026-11-26 11:2x)**: 루트 77G 중 100% 사용(361MB) → 링커 Bus error. 오케스트레이터 임시 검증 빌드(4.3G) 등 삭제로 32GB 확보. 원인: 동시 빌드(엔진 다중 target, CUDA 이미지, docker build cache 22GB). 규칙: 검증용 별도 CARGO_TARGET_DIR 금지, 빌드 전 `df -h /` 확인. T-307 검수는 T-309 와 합쳐 진행.
@@ -51,7 +51,7 @@
 ### In Progress (진행 중)
 | 티켓 ID | 마일스톤 | 상세 작업 목표 | 담당 워커 | 대상 경로 | 검증 명령어 (`verify_cmd`) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| T-311 | M3 | translate 실사용 품질 보강(한글→영어·영어→한글, 20쪽 문서, 표·코드·placeholder 보존, glossary) | w2-fine | `engine/src/nodes/translate.rs`, `engine/tests/llm_nodes.rs`, `scripts/live/**`, `fixtures/live/**` | live-nodes --only translate + engine 표준 검증 |
+| T-315 | M3 | rag 실사용 품질 보강(한글·긴 문서 청킹, 검색 정확도, 근거 표기, 모르는 질문 처리, 재인덱싱) | w1-kobe | `engine/src/{nodes/rag.rs,api/rag.rs,db/rag.rs}`, `engine/tests/rag.rs`, `scripts/live/rag_check.sh`(신규, 단독) | engine 표준 검증 + rag_check.sh 실 API |
 
 ### Blocked (보류 / 설계 조정 또는 외부 확인 필요)
 | 티켓 ID | 마일스톤 | 작업 요약 | 블로커 사유 | 해소 방안 |
@@ -64,7 +64,6 @@
 | T-312 | M3 | I | summary 실사용 품질 보강 | T-311 | `engine/src/nodes/summary.rs` | live --only summary |
 | T-313 | M3 | I | analyze 실사용 품질 보강 | T-312 | `engine/src/nodes/analyze.rs` | live --only analyze |
 | T-314 | M3 | I | slide 실사용 품질 보강 | T-313 | `engine/src/nodes/slide/**` | live --only slide |
-| T-315 | M3 | I | rag 실사용 품질 보강 | T-314 | `engine/src/{nodes/rag.rs,api/rag.rs}` | live --only rag |
 | T-316 | M3 | I | voice 실사용 품질 보강 | T-315 | `engine/src/nodes/voice.rs`, `clients/tts.rs` | live --only voice |
 | T-317 | M3 | I | fill 실사용 품질 보강 | T-316 | `engine/src/nodes/fill/**` | live --only fill |
 
@@ -109,6 +108,7 @@
 | T-309 | M3 | 외부 AI OpenRouter 전환(OpenAI 호환 LLM·임베딩 1024(0003)·TTS pcm→MP3(LAME)), env·compose·.env.example | 오케스트레이터 엄격 검증(pipefail): fmt·clippy·test 347·prepare --check·docker build·Anthropic 잔존 0·compose 7키. 사용자 스택 engine 재배포(마이그레이션 적용, 키·모델 주입 확인)·smoke PASS | 2026-11-26 |
 | T-310 | M3 | 실 API 검증 도구 `scripts/live-nodes.sh`(LIVE_CONFIRM 게이트, --with-verify-stack, SUMMARY.md) + 픽스처(영/한 보고서) | 실 OpenRouter 로 7개 노드 전부 succeeded: translate 10.2s·summary 6.8s·analyze 4.6s·slide 6.7s(8쪽)·rag 2.5s(질의 2/2 정답)·voice 39.4s(MP3 1.9MB)·fill 1.4s. 오케스트레이터가 산출물 직접 검토(번역·요약·차트 수치·슬라이드 렌더·폼 채움) | 2026-11-26 |
 | T-118 | M1(보수) | extractor 이미지 축소: uv sync 에 tmpfs 캐시 마운트(uv 캐시 6GB 레이어 제거) | 오케스트레이터: slim 이미지 cuda 인식 확인 → latest 로 교체·사용자 스택 재배포(health device=cuda, smoke PASS). 이미지 21.6GB → 11.8GB(풀린 레이어 14.0→7.7GB). 구 이미지 삭제·빌드 캐시 정리로 디스크 여유 6.1GB → 39GB | 2026-11-26 |
+| T-311 | M3 | translate 품질 보강: 제목-다음 블록 결합, 쪽 경계 문장 조각 재결합(split_translation_chunks), 응답 코드펜스 래퍼 제거·코드 블록 복원 + 회귀 테스트 8 | 오케스트레이터: HEAD+T-311 파일 깨끗한 worktree 에서 fmt·clippy·test 355·prepare 통과. 실 API 3케이스 산출물 직접 확인 — 20쪽 문서 제목 35/35·표 행 48/48·이미지 3/3 보존, 용어집 준수, 한→영 표 수치 보존. 사용자 스택 engine 재배포(worktree 빌드)·smoke PASS. 경미: 숫자 한글 풀어쓰기('아흔 일') | 2026-11-26 |
 
 ---
 

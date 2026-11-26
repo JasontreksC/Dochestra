@@ -37,13 +37,39 @@ live_finish() { # live_finish <node> <graph> <output-node-ids...>
   live_run_workflow "$node" "$wf" "$@"
 }
 
-live_node_translate() {
-  live_front_end translate || return 1
-  GRAPH=$(echo "$GRAPH" |
-    live_add_node n_j json_input "$(jq -nc --arg l "$TARGET_LANG" '{value: {targetLanguage: $l}}')" false |
+# live_translate_case <case> <pdf> <settings-json> [glossary-json]
+# One translate scenario on its own document; downloads the source (extract md) and the
+# translation, then runs scripts/live/translate_check.py and stores the checklist in result.json.
+live_translate_case() {
+  local case="$1" pdf="$2" settings="$3" glossary="${4:-}"
+  local node="translate-$case" dir="$OUT_DIR/translate-$case"
+  mkdir -p "$dir"
+  live_make_bundle "live-$node" "$pdf" || return 1
+  local graph
+  graph=$(live_base_graph "$LIVE_ID" |
+    live_add_node n_j json_input "$(jq -nc --argjson v "$settings" '{value: $v}')" false |
     live_add_node n_t translate '{}' true |
     live_add_edge n_x md n_t md | live_add_edge n_j json n_t settings)
-  live_finish translate "$GRAPH" n_t
+  # n_x md is downloaded too (it is the source the translation is checked against).
+  live_finish "$node" "$graph" n_t n_x || return 1
+  local src="$dir/artifacts/n_x-md-0-md.md" dst="$dir/artifacts/n_t-md-0-md.md"
+  if [[ -f "$src" && -f "$dst" ]]; then
+    python3 "$ROOT/scripts/live/translate_check.py" "$src" "$dst" --glossary "${glossary:-{\}}" >"$dir/checks.json" || true
+    live_patch_result "$dir" '.checks = $c[0].checks | .checksOk = $c[0].ok | .sourceChars = $sc | .translatedChars = $tc' \
+      --slurpfile c "$dir/checks.json" --argjson sc "$(wc -m <"$src")" --argjson tc "$(wc -m <"$dst")" || true
+  fi
+}
+
+live_node_translate() {
+  # (1) Korean -> English, (2) 20-page English handbook -> Korean, (3) glossary + tone + instructions.
+  # Settings carry glossary/tone/instructions in (3) only. Cases are independent: one failing does not stop the rest.
+  local rc=0
+  live_translate_case ko "$FIXTURES/report_ko.pdf" '{"targetLanguage":"en"}' || rc=1
+  live_translate_case long "$FIXTURES/handbook_en.pdf" '{"targetLanguage":"ko"}' || rc=1
+  local g='{"Aurora Robotics":"Aurora Robotics","operating margin":"영업이익률","fleet":"플릿"}'
+  live_translate_case settings "$FIXTURES/report_en.pdf" "$(jq -nc --argjson g "$g" \
+    '{targetLanguage:"ko", glossary:$g, tone:"격식 있는 보고서체(합니다체)", instructions:"숫자와 단위는 원문 그대로 유지하고 고유명사는 번역하지 않는다."}')" "$g" || rc=1
+  return "$rc"
 }
 
 live_node_summary() {

@@ -88,13 +88,28 @@ pub fn build_system_prompt(settings: &TranslateSettings) -> String {
 /// Blocks are separated by blank lines; fenced code blocks (``` / ~~~) are one block even if
 /// they contain blank lines, and tables stay whole because their rows are contiguous. Blocks
 /// are accumulated greedily; a block longer than `max_chars` becomes a chunk of its own.
-/// Chunks are joined back with a blank line.
+/// Chunks are joined back with a blank line. (Also used by the `rag` node.)
 pub fn split_chunks(md: &str, max_chars: usize) -> Vec<String> {
+    pack_blocks(split_blocks(md), max_chars)
+}
+
+/// Chunking for translation: like [`split_chunks`], but first (1) re-joins paragraphs that a
+/// page break cut in the middle of a sentence ([`join_continuations`]) and (2) glues headings to
+/// the block that follows them ([`attach_headings`]), so a chunk never ends with an orphaned
+/// heading and no sentence is translated in two halves.
+pub fn split_translation_chunks(md: &str, max_chars: usize) -> Vec<String> {
+    pack_blocks(
+        attach_headings(join_continuations(split_blocks(md))),
+        max_chars,
+    )
+}
+
+fn pack_blocks(blocks: Vec<String>, max_chars: usize) -> Vec<String> {
     let mut chunks: Vec<String> = Vec::new();
     let mut current = String::new();
     let mut current_len = 0usize;
 
-    for block in split_blocks(md) {
+    for block in blocks {
         let block_len = block.chars().count();
         if current.is_empty() {
             current = block;
@@ -113,6 +128,137 @@ pub fn split_chunks(md: &str, max_chars: usize) -> Vec<String> {
         chunks.push(current);
     }
     chunks
+}
+
+fn is_heading(block: &str) -> bool {
+    !block.contains('\n') && block.trim_start().starts_with('#')
+}
+
+/// A plain prose paragraph (as opposed to a heading, table, list, quote, code or HTML block).
+fn is_prose(block: &str) -> bool {
+    block.chars().next().is_some_and(char::is_alphabetic)
+}
+
+/// Re-joins a paragraph that a page break split in the middle of a sentence: the previous block
+/// is prose without terminal punctuation and the next block starts with a lowercase letter.
+/// (PDF extraction emits such fragments as separate blocks; translating them separately — or
+/// in different chunks — produces broken sentences.)
+fn join_continuations(blocks: Vec<String>) -> Vec<String> {
+    const TERMINAL: &[char] = &[
+        '.', '!', '?', ':', ';', '。', '！', '？', '…', '"', '”', '」', ')', '*', '|',
+    ];
+    let mut out: Vec<String> = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        let continues = block.chars().next().is_some_and(char::is_lowercase)
+            && out
+                .last()
+                .is_some_and(|prev| is_prose(prev) && !prev.trim_end().ends_with(TERMINAL));
+        if continues {
+            if let Some(prev) = out.last_mut() {
+                prev.push(' ');
+                prev.push_str(&block);
+            }
+        } else {
+            out.push(block);
+        }
+    }
+    out
+}
+
+/// Glues each run of headings to the next non-heading block (one atomic block), so a chunk
+/// boundary never separates a heading from its body. A trailing heading stays on its own.
+fn attach_headings(blocks: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(blocks.len());
+    let mut pending: Vec<String> = Vec::new();
+    for block in blocks {
+        if is_heading(&block) {
+            pending.push(block);
+        } else {
+            if pending.is_empty() {
+                out.push(block);
+            } else {
+                pending.push(block);
+                out.push(pending.join("\n\n"));
+                pending.clear();
+            }
+        }
+    }
+    if !pending.is_empty() {
+        out.push(pending.join("\n\n"));
+    }
+    out
+}
+
+/// Line ranges `[start, end]` (inclusive) of fenced code blocks (``` / ~~~) in `text`.
+fn fenced_ranges(lines: &[&str]) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut open: Option<(char, usize)> = None;
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        match open {
+            Some((marker, start)) => {
+                if trimmed.starts_with(&marker.to_string().repeat(3)) {
+                    ranges.push((start, i));
+                    open = None;
+                }
+            }
+            None => {
+                if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                    open = trimmed.chars().next().map(|c| (c, i));
+                }
+            }
+        }
+    }
+    ranges
+}
+
+/// Guards against the model damaging what it was told to keep:
+/// - an answer wrapped as one fenced block (``` / ```markdown) around the whole translation is
+///   unwrapped when the source chunk was not itself a single fenced block;
+/// - when the answer has as many fenced code blocks as the source chunk, each one is replaced
+///   by the source's verbatim block (code must never be translated or reformatted).
+pub fn sanitize_answer(source_chunk: &str, answer: &str) -> String {
+    let mut text = answer.trim_end().to_owned();
+
+    let src_lines: Vec<&str> = source_chunk.lines().collect();
+    let src_ranges = fenced_ranges(&src_lines);
+
+    // Whole-answer wrapper: ```, ```markdown or ```md on the first line and a bare ``` on the
+    // last, while the source chunk itself does not start with a fence. (Inner fences of the
+    // same length make the wrapper ambiguous for a real fence parser, so check the ends only.)
+    let source_starts_with_fence = src_lines
+        .iter()
+        .find(|l| !l.trim().is_empty())
+        .is_some_and(|l| l.trim_start().starts_with("```") || l.trim_start().starts_with("~~~"));
+    if !source_starts_with_fence {
+        let lines: Vec<&str> = text.lines().collect();
+        if let (Some(first), Some(last)) = (lines.first(), lines.last()) {
+            let first = first.trim();
+            let wrapper_open = matches!(first, "```" | "```markdown" | "```md" | "~~~");
+            if lines.len() >= 3
+                && wrapper_open
+                && last.trim() == if first == "~~~" { "~~~" } else { "```" }
+            {
+                text = lines[1..lines.len() - 1].join("\n");
+            }
+        }
+    }
+
+    let lines: Vec<&str> = text.lines().collect();
+    let ranges = fenced_ranges(&lines);
+    if !src_ranges.is_empty() && ranges.len() == src_ranges.len() {
+        let mut rebuilt: Vec<&str> = Vec::with_capacity(lines.len());
+        let mut cursor = 0usize;
+        for (i, &(start, end)) in ranges.iter().enumerate() {
+            rebuilt.extend_from_slice(&lines[cursor..start]);
+            let (s_start, s_end) = src_ranges[i];
+            rebuilt.extend_from_slice(&src_lines[s_start..=s_end]);
+            cursor = end + 1;
+        }
+        rebuilt.extend_from_slice(&lines[cursor..]);
+        text = rebuilt.join("\n");
+    }
+    text
 }
 
 fn split_blocks(md: &str) -> Vec<String> {
@@ -163,15 +309,15 @@ pub async fn run(
 
     let system = build_system_prompt(&settings);
     let mut translated = Vec::new();
-    for chunk in split_chunks(&markdown, MAX_CHUNK_CHARS) {
+    for chunk in split_translation_chunks(&markdown, MAX_CHUNK_CHARS) {
         let answer = llm
             .complete(LlmRequest {
                 system: system.clone(),
-                user_content: vec![UserBlock::Text(chunk)],
+                user_content: vec![UserBlock::Text(chunk.clone())],
             })
             .await
             .map_err(|e| NodeError::Failed(e.to_string()))?;
-        translated.push(answer.trim_end().to_owned());
+        translated.push(sanitize_answer(&chunk, &answer));
     }
 
     write_md(ctx, &translated.join("\n\n")).await
@@ -203,9 +349,10 @@ mod tests {
 
     #[test]
     fn blocks_accumulate_up_to_the_limit_in_order() {
-        let a = "a".repeat(40);
-        let b = "b".repeat(40);
-        let c = "c".repeat(40);
+        // Uppercase: lowercase-initial blocks would be re-joined as page-break fragments.
+        let a = "A".repeat(40);
+        let b = "B".repeat(40);
+        let c = "C".repeat(40);
         let md = format!("{a}\n\n{b}\n\n{c}");
         // 40 + 2 + 40 = 82 <= 85 fits, adding a third (82 + 2 + 40) does not.
         let chunks = split_chunks(&md, 85);
@@ -218,11 +365,11 @@ mod tests {
 
     #[test]
     fn oversized_block_becomes_its_own_chunk() {
-        let big = "x".repeat(300);
-        let md = format!("intro\n\n{big}\n\noutro");
+        let big = "X".repeat(300);
+        let md = format!("Intro\n\n{big}\n\nOutro");
         assert_eq!(
             split_chunks(&md, 100),
-            ["intro".to_owned(), big, "outro".to_owned()]
+            ["Intro".to_owned(), big, "Outro".to_owned()]
         );
     }
 
@@ -319,5 +466,93 @@ mod tests {
         assert!(prompt.contains("<!-- image -->"));
         let minimal = build_system_prompt(&parse_settings(r#"{"targetLanguage":"ko"}"#).unwrap());
         assert!(!minimal.contains("Glossary") && !minimal.contains("Source language"));
+    }
+
+    #[test]
+    fn plain_chunking_is_unchanged_for_rag() {
+        // split_chunks (shared with rag) keeps headings and fragments as separate blocks.
+        assert_eq!(split_chunks("a\n\n## T\n\nb", 4), ["a", "## T", "b"]);
+        assert_eq!(
+            split_chunks("Text with no end\n\nlower start", 10),
+            ["Text with no end", "lower start"]
+        );
+    }
+
+    #[test]
+    fn headings_stay_with_the_following_block() {
+        let a = "a".repeat(60);
+        let b = "b".repeat(60);
+        let md = format!("{a}\n\n## Title\n\n{b}");
+        // Without gluing, `## Title` would end chunk 1 (60 + 2 + 8 <= 75) and `b` start chunk 2.
+        let chunks = split_translation_chunks(&md, 75);
+        assert_eq!(chunks, [a.clone(), format!("## Title\n\n{b}")]);
+        // Consecutive headings travel together with the next body block.
+        let md = format!("{a}\n\n## One\n\n### Two\n\n{b}");
+        let chunks = split_translation_chunks(&md, 75);
+        assert_eq!(chunks, [a, format!("## One\n\n### Two\n\n{b}")]);
+        // A heading at the very end stays (alone) rather than vanishing.
+        assert_eq!(
+            split_translation_chunks("text\n\n## End", 5),
+            ["text", "## End"]
+        );
+        // Joining chunks restores the document.
+        let md = "# A\n\nx\n\n## B\n\ny";
+        assert_eq!(split_translation_chunks(md, 4).join("\n\n"), md);
+    }
+
+    #[test]
+    fn page_break_fragments_are_rejoined() {
+        let md = "The vision system detects damaged packaging and routes the affected item to a\n\nmanual inspection station. Next sentence ends here.\n\nAnother paragraph.";
+        let chunks = split_translation_chunks(md, 8000);
+        assert_eq!(
+            chunks,
+            [
+                "The vision system detects damaged packaging and routes the affected item to a manual inspection station. Next sentence ends here.\n\nAnother paragraph."
+            ]
+        );
+        // Terminal punctuation, a capital letter, or a non-prose previous block: no join.
+        for md in [
+            "Ends here.\n\nlower start",
+            "No terminal punctuation\n\nCapital start",
+            "# heading\n\nlower start",
+            "| a | b |\n|---|---|\n| 1 | 2 |\n\nlower start",
+            "<!-- image -->\n\nlower start",
+            "- item\n\nlower start",
+        ] {
+            assert_eq!(split_translation_chunks(md, 8000), [md.to_owned()], "{md}");
+            assert_eq!(join_continuations(split_blocks(md)).len(), 2, "{md}");
+        }
+    }
+
+    #[test]
+    fn answer_wrapped_in_a_code_fence_is_unwrapped() {
+        let src = "# Title\n\nHello";
+        assert_eq!(
+            sanitize_answer(src, "```markdown\n# 제목\n\n안녕\n```\n"),
+            "# 제목\n\n안녕"
+        );
+        // A source that is itself one fenced block is left alone.
+        let code = "```\nfn main() {}\n```";
+        assert_eq!(sanitize_answer(code, code), code);
+        // A fence in the middle of an answer is not a wrapper.
+        let answer = "텍스트\n\n```\ncode\n```\n\n끝";
+        assert_eq!(
+            sanitize_answer("Text\n\n```\ncode\n```\n\nEnd", answer),
+            answer
+        );
+    }
+
+    #[test]
+    fn code_blocks_are_restored_verbatim() {
+        let src =
+            "Run it:\n\n```python\n# add numbers\nprint(1 + 2)\n```\n\nThen:\n\n~~~\nls -l\n~~~";
+        let answer = "실행하세요:\n\n```python\n# 숫자를 더한다\nprint(1+2)\n```\n\n그다음:\n\n~~~\nls -l   \n~~~";
+        assert_eq!(
+            sanitize_answer(src, answer),
+            "실행하세요:\n\n```python\n# add numbers\nprint(1 + 2)\n```\n\n그다음:\n\n~~~\nls -l\n~~~"
+        );
+        // Mismatched block counts: leave the answer untouched (do not guess).
+        assert_eq!(sanitize_answer(src, "번역만"), "번역만");
+        assert_eq!(sanitize_answer("plain", "그냥 텍스트\n"), "그냥 텍스트");
     }
 }

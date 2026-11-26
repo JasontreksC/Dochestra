@@ -594,10 +594,11 @@ async fn translate_preserves_chunk_order_and_code_blocks() {
     let env = Env::new(NodeKind::Translate);
     // Sizes chosen so that chunk 1 = `a`, chunk 2 = fenced block + `b`, chunk 3 = `c`.
     // The fenced block contains a blank line and must not be split.
-    let a = "a".repeat(7990);
+    // (Uppercase: lowercase-initial blocks would be re-joined as page-break fragments.)
+    let a = "A".repeat(7990);
     let fenced = "```\nline1\n\nline2\n```".to_owned();
-    let b = "b".repeat(4000);
-    let c = "c".repeat(5000);
+    let b = "B".repeat(4000);
+    let c = "C".repeat(5000);
     let md = format!("{a}\n\n{fenced}\n\n{b}\n\n{c}");
 
     let mock = spawn_llm(vec![ok("T1\n"), ok("T2"), ok("T3\n\n")]).await;
@@ -631,6 +632,58 @@ async fn translate_preserves_chunk_order_and_code_blocks() {
             && system.contains("formal")
     );
     assert!(system.contains("<!-- image -->"));
+}
+
+#[tokio::test]
+async fn translate_keeps_headings_with_their_body_across_chunks() {
+    let env = Env::new(NodeKind::Translate);
+    // Chunk 1 would end with `## Section` (7990 + 2 + 10 <= 8000); the heading must move on.
+    let a = "A".repeat(7980);
+    let md = format!("{a}\n\n## Section\n\n{}\n\nTail.", "B".repeat(3000));
+    let mock = spawn_llm(vec![ok("T1"), ok("T2")]).await;
+    let inputs = translate_inputs(&env, &md, r#"{"targetLanguage":"ko"}"#);
+    translate::run(&client(&mock.url, Some(KEY)), &env.ctx, &inputs)
+        .await
+        .unwrap();
+    assert_eq!(mock.count(), 2);
+    assert_eq!(mock.user_text(0), a);
+    assert!(
+        mock.user_text(1).starts_with("## Section\n\nBBB"),
+        "{}",
+        &mock.user_text(1)[..40]
+    );
+}
+
+#[tokio::test]
+async fn translate_rejoins_page_break_fragments_before_sending() {
+    let env = Env::new(NodeKind::Translate);
+    let md = "The fleet controller assigns every pick task to the nearest idle\n\nrobot and re-plans the route. Done.";
+    let mock = spawn_llm(vec![ok("번역")]).await;
+    let inputs = translate_inputs(&env, md, r#"{"targetLanguage":"ko"}"#);
+    translate::run(&client(&mock.url, Some(KEY)), &env.ctx, &inputs)
+        .await
+        .unwrap();
+    assert_eq!(mock.count(), 1);
+    assert_eq!(
+        mock.user_text(0),
+        "The fleet controller assigns every pick task to the nearest idle robot and re-plans the route. Done."
+    );
+}
+
+#[tokio::test]
+async fn translate_restores_code_and_unwraps_a_fenced_answer() {
+    let env = Env::new(NodeKind::Translate);
+    let md = "Run it:\n\n```sh\nls -l\n```";
+    // The model translated the code comment-free command and wrapped everything in a fence.
+    let mock = spawn_llm(vec![ok(
+        "```markdown\n실행하세요:\n\n```sh\nls -la\n```\n```",
+    )])
+    .await;
+    let inputs = translate_inputs(&env, md, r#"{"targetLanguage":"ko"}"#);
+    let out = translate::run(&client(&mock.url, Some(KEY)), &env.ctx, &inputs)
+        .await
+        .unwrap();
+    assert_eq!(env.output_text(&out), "실행하세요:\n\n```sh\nls -l\n```");
 }
 
 #[tokio::test]
