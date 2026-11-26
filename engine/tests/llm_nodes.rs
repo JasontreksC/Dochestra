@@ -711,6 +711,37 @@ async fn llm_failures_become_node_failures() {
 }
 
 #[tokio::test]
+async fn analyze_prompt_prescribes_the_section_structure_and_forbids_guessing() {
+    let env = Env::new(NodeKind::Analyze);
+    let jpg = vec![0xff, 0xd8, 0xff, 0xe0, 1];
+    let inputs = NodeInputs::from([(
+        "image".to_owned(),
+        input(ScalarType::Jpg, false, vec![env.file("pic.jpg", &jpg)]),
+    )]);
+    let mock = spawn_llm(vec![ok("## 요약\n본문")]).await;
+    analyze::run(&client(&mock.url, Some(KEY)), &env.ctx, &inputs)
+        .await
+        .unwrap();
+    let instruction = mock.user_text(0);
+    for needle in [
+        "첫 줄은 반드시 `## 요약`",
+        "## 이미지 속 텍스트",
+        "## 도표·수치",
+        "## 판독 불가·불확실",
+        "(계산값)",
+        "이미지 가장자리까지 꼼꼼히 확인",
+        "추측하지 말고 '판독 불가'",
+    ] {
+        assert!(instruction.contains(needle), "missing {needle:?}");
+    }
+    let system = mock.body(0)["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(system.contains("한국어 Markdown") && system.contains("지어내지 않는다"));
+}
+
+#[tokio::test]
 async fn analyze_sends_the_image_and_enforces_the_size_limit() {
     let env = Env::new(NodeKind::Analyze);
     let jpg = vec![0xff, 0xd8, 0xff, 0xe0, 1, 2, 3];

@@ -3,6 +3,7 @@
     uv run --project extractor python fixtures/live/make_fixtures.py
 
 Outputs (next to this file):
+  vision_{chart,table,text,photo,small}.pdf  one image per PDF for the analyze node (T-313)
   gallery_en.pdf   English sensor atlas with 28 figures (more than the 20-image limit of summary)
   handbook_en.pdf  English technical handbook, 20+ pages: tables, code listings, figures
   report_en.pdf  English annual report, 4 pages, 2 tables, 2 figures
@@ -17,6 +18,7 @@ from PIL import Image, ImageDraw
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.utils import ImageReader
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
@@ -289,6 +291,173 @@ def gallery(out: Path) -> None:
     doc.build(story)
 
 
+# ---- analyze (vision) fixtures: one image per PDF -----------------------------------------------
+FONT_KO = str(FONTS / "NanumGothic-Regular.ttf")
+FONT_KO_BOLD = str(FONTS / "NanumGothic-Bold.ttf")
+
+
+def _font(size: int, ko: bool = False, bold: bool = False):
+    from PIL import ImageFont
+
+    return ImageFont.truetype(FONT_KO_BOLD if bold else FONT_KO, size) if ko else ImageFont.load_default(size)
+
+
+def vision_chart() -> Image.Image:
+    """Grouped bar chart with axis, gridlines, legend and value labels (the answers are the labels)."""
+    img = Image.new("RGB", (900, 560), "white")
+    d = ImageDraw.Draw(img)
+    d.text((30, 14), "Quarterly Revenue (USD M)", fill="black", font=_font(28))
+    left, bottom, top = 90, 480, 90
+    for v in (0, 50, 100, 150, 200, 250):
+        y = bottom - (bottom - top) * v / 250
+        d.line([left, y, 860, y], fill="#CCCCCC", width=1)
+        d.text((40, y - 9), str(v), fill="black", font=_font(18))
+    d.line([left, top, left, bottom], fill="black", width=2)
+    d.line([left, bottom, 860, bottom], fill="black", width=2)
+    series = {"2024": [100, 130, 150, 170], "2025": [120, 150, 170, 200]}
+    colors_ = {"2024": "#9AA5B1", "2025": "#3E63DD"}
+    for qi, q in enumerate(["Q1", "Q2", "Q3", "Q4"]):
+        x0 = left + 40 + qi * 180
+        for si, (name, vals) in enumerate(series.items()):
+            v = vals[qi]
+            x = x0 + si * 70
+            y = bottom - (bottom - top) * v / 250
+            d.rectangle([x, y, x + 58, bottom - 1], fill=colors_[name])
+            d.text((x + 8, y - 24), str(v), fill="black", font=_font(20))
+        d.text((x0 + 45, bottom + 8), q, fill="black", font=_font(20))
+    for i, (name, col) in enumerate(colors_.items()):
+        d.rectangle([680 + i * 90, 22, 700 + i * 90, 42], fill=col)
+        d.text((706 + i * 90, 20), name, fill="black", font=_font(20))
+    return img
+
+
+def vision_table() -> Image.Image:
+    rows = [["Region", "2024", "2025", "Growth"], ["Asia-Pacific", "152", "199", "31%"], ["North America", "121", "142", "17%"], ["Europe", "105", "114", "9%"], ["Middle East", "30", "27", "-10%"]]
+    img = Image.new("RGB", (860, 400), "white")
+    d = ImageDraw.Draw(img)
+    widths = [300, 170, 170, 170]
+    y = 20
+    for r, row in enumerate(rows):
+        x = 20
+        for c, cell in enumerate(row):
+            d.rectangle([x, y, x + widths[c], y + 66], outline="black", width=2, fill="#E8EAF0" if r == 0 else "white")
+            d.text((x + 14, y + 18), cell, fill="black", font=_font(28))
+            x += widths[c]
+        y += 66
+    return img
+
+
+def vision_table_photo() -> Image.Image:
+    """The table above 'photographed' on a wooden desk: rotated, shadowed, noisy (not a clean grid,
+    so the extractor treats it as a picture instead of a table)."""
+    import random
+
+    from PIL import ImageFilter
+
+    t = vision_table().convert("RGBA")
+    bg = Image.new("RGB", (1100, 640), (176, 142, 104))
+    px = bg.load()
+    rnd = random.Random(3)
+    for y in range(640):
+        for x in range(1100):
+            n = rnd.randint(-14, 14)
+            r, g, b = px[x, y]
+            px[x, y] = (max(0, min(255, r + n + (x // 90) % 3 * 4)), max(0, min(255, g + n)), max(0, min(255, b + n)))
+    shadow = Image.new("RGBA", (t.width + 30, t.height + 30), (0, 0, 0, 0))
+    ImageDraw.Draw(shadow).rectangle([15, 15, t.width + 15, t.height + 15], fill=(0, 0, 0, 110))
+    shadow = shadow.filter(ImageFilter.GaussianBlur(10))
+    shadow.paste(t, (0, 0), t)
+    rot = shadow.rotate(3, expand=True, resample=Image.BICUBIC)
+    bg.paste(rot, (80, 40), rot)
+    return bg.filter(ImageFilter.GaussianBlur(0.6))
+
+
+def vision_text() -> Image.Image:
+    """Korean poster: headline plus detail lines (OCR of Hangul)."""
+    img = Image.new("RGB", (900, 700), "#FFF8E1")
+    d = ImageDraw.Draw(img)
+    d.rectangle([0, 0, 899, 120], fill="#D84315")
+    d.text((40, 30), "2026 로봇 박람회", fill="white", font=_font(56, ko=True, bold=True))
+    lines = [
+        "일시: 2026년 3월 14일(토) 오전 10시",
+        "장소: 부산 벡스코 제2전시장 3홀",
+        "주최: 오로라 로보틱스",
+        "입장료: 무료 (사전 등록 필수)",
+        "문의: 051-123-4567",
+        "주차는 제1전시장 지하 주차장을 이용하세요",
+    ]
+    for i, line in enumerate(lines):
+        d.text((50, 170 + i * 80), line, fill="#222222", font=_font(34, ko=True))
+    d.rectangle([0, 0, img.width - 1, img.height - 1], outline="#5D4037", width=14)
+    for i, c in enumerate(["#D84315", "#FFB300", "#0277BD"]):
+        d.ellipse([700 + i * 50, 560, 780 + i * 50, 640], fill=c)
+    return img
+
+
+def vision_photo() -> Image.Image:
+    """Photo-like landscape: sky gradient, sun, mountains, a lake and a red-roofed house."""
+    img = Image.new("RGB", (800, 520))
+    px = img.load()
+    for y in range(520):
+        for x in range(800):
+            if y < 300:
+                t = y / 300
+                px[x, y] = (int(110 + 120 * t), int(170 + 70 * t), int(235 - 20 * t))
+            else:
+                t = (y - 300) / 220
+                px[x, y] = (int(40 + 20 * t), int(110 - 30 * t), int(170 - 40 * t))
+    d = ImageDraw.Draw(img)
+    d.ellipse([600, 50, 700, 150], fill="#FFD54F")
+    d.polygon([(0, 300), (150, 130), (300, 300)], fill="#6D6D78")
+    d.polygon([(200, 300), (400, 90), (620, 300)], fill="#55555F")
+    d.polygon([(130, 150), (150, 130), (172, 160)], fill="white")
+    d.polygon([(380, 120), (400, 90), (424, 128)], fill="white")
+    d.rectangle([330, 330, 450, 400], fill="#C9B79C")
+    d.polygon([(320, 330), (390, 280), (460, 330)], fill="#B71C1C")
+    d.rectangle([375, 360, 405, 400], fill="#5D4037")
+    d.line([(0, 330), (800, 330)], fill="#3B6E4F", width=3)
+    return img
+
+
+def vision_small() -> Image.Image:
+    img = Image.new("RGB", (150, 110), "white")
+    d = ImageDraw.Draw(img)
+    d.rectangle([20, 50, 55, 100], fill="#3E63DD")
+    d.rectangle([80, 20, 115, 100], fill="#E5484D")
+    d.text((24, 32), "30", fill="black", font=_font(16))
+    d.text((84, 2), "70", fill="black", font=_font(16))
+    d.text((26, 100), "A", fill="black", font=_font(10))
+    d.text((88, 100), "B", fill="black", font=_font(10))
+    return img
+
+
+def single_image_pdf(out: Path, img: Image.Image, width_mm: float, caption: str, pagesize=A4) -> None:
+    """One figure with a heading, an intro sentence and a caption: without that context the
+    extractor's layout model often fails to treat a lone image as a picture."""
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, format="JPEG", quality=92)
+    buf.seek(0)
+    ss = getSampleStyleSheet()
+    w = width_mm * mm
+    h = w * img.height / img.width
+    story: list = [
+        Paragraph("Supplied material", ss["Heading2"]),
+        Paragraph("The following figure was supplied by the organizer and is reproduced below.", ss["BodyText"]),
+        Spacer(1, 4 * mm),
+        RLImage(buf, width=w, height=h),
+        Paragraph(caption, ss["BodyText"]),
+    ]
+    SimpleDocTemplate(str(out), pagesize=pagesize, title=out.stem).build(story)
+
+
+def vision_set() -> None:
+    single_image_pdf(HERE / "vision_chart.pdf", vision_chart(), 170, "Figure 1. Quarterly revenue by year.")
+    single_image_pdf(HERE / "vision_table.pdf", vision_table_photo(), 170, "Figure 1. Photograph of the printed revenue table.")
+    single_image_pdf(HERE / "vision_text.pdf", vision_text(), 150, "Figure 1. Event poster.")
+    single_image_pdf(HERE / "vision_photo.pdf", vision_photo(), 150, "Figure 1. Landscape photograph.")
+    single_image_pdf(HERE / "vision_small.pdf", vision_small(), 24, "Figure 1. Small chart.")
+
+
 SENTENCES = [
     "The fleet controller assigns every pick task to the nearest idle robot and re-plans the route when an aisle is blocked.",
     "Operators can pause a zone from the dashboard, and the robots finish their current motion before they stop.",
@@ -365,6 +534,7 @@ def handbook(out: Path) -> None:
 
 
 if __name__ == "__main__":
+    vision_set()
     for name, fn in [("report_en.pdf", english), ("report_ko.pdf", korean), ("handbook_en.pdf", handbook), ("gallery_en.pdf", gallery)]:
         target = HERE / name
         fn(target)

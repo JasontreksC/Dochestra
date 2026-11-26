@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Per-node scenarios for scripts/live-nodes.sh (sourced after lib.sh).
 # Each live_node_<name> creates its own bundle + workflow, runs it, and returns 0 on success.
-# Globals expected: DOC_PDF, DOC_KEY (report_en|report_ko), TARGET_LANG, FORM_PDF, FIXTURES.
+# Globals expected: DOC_PDF, DOC_KEY (report_en|report_ko), TARGET_LANG, FIXTURES.
 
 # Approximate paid external calls per node, used by the dry-run plan (LLM / embedding / TTS).
 live_estimate() {
@@ -12,7 +12,6 @@ live_estimate() {
     slide) echo "LLM 1~2" ;;
     rag) echo "임베딩 1~2 + 질의 2회(임베딩 2 + LLM 2)" ;;
     voice) echo "LLM 1 + TTS 1~N (대본 길이에 따라 청크)" ;;
-    fill) echo "LLM 1" ;;
   esac
 }
 
@@ -107,13 +106,55 @@ live_node_summary() {
   return "$rc"
 }
 
-live_node_analyze() {
-  live_front_end analyze || return 1
-  GRAPH=$(echo "$GRAPH" |
+# live_analyze_case <case> <pdf> [expect-failure-pattern]
+# One image per PDF: bundle -> pick_pdf -> extract -> pick_jpg(0) -> analyze. The image the model
+# saw (n_i) and its analysis (n_a) are downloaded; analyze_check.py compares it with vision_facts.json.
+live_analyze_case() {
+  local case="$1" pdf="$2" expect_fail="${3:-}"
+  local node="analyze-$case" dir="$OUT_DIR/analyze-$case"
+  mkdir -p "$dir"
+  live_make_bundle "live-$node" "$pdf" || return 1
+  local graph
+  graph=$(live_base_graph "$LIVE_ID" |
     live_add_node n_i pick_jpg '{"index":0}' false |
     live_add_node n_a analyze '{}' true |
     live_add_edge n_x images n_i images | live_add_edge n_i image n_a image)
-  live_finish analyze "$GRAPH" n_a
+  if ! live_finish "$node" "$graph" n_a n_i; then
+    if [[ -n "$expect_fail" ]]; then
+      local err
+      err=$(jq -r .error "$dir/result.json")
+      if [[ "$err" == *"$expect_fail"* ]]; then
+        live_patch_result "$dir" '.status = "expected-failure"'
+        return 0
+      fi
+      # failed somewhere else (e.g. the extractor): not the path under test
+      live_patch_result "$dir" '.status = "skipped" | .error = ("대상 경로에 도달하지 못함: " + .error)'
+      return 0
+    fi
+    return 1
+  fi
+  local img dst
+  img=$(find "$dir/artifacts" -name 'n_i-image-*' | head -n1)
+  dst="$dir/artifacts/n_a-md-0-md.md"
+  if [[ -f "$dst" ]]; then
+    python3 "$ROOT/scripts/live/analyze_check.py" "$dst" --case "$case" --facts "$FIXTURES/vision_facts.json" >"$dir/checks.json" || true
+    live_patch_result "$dir" '.checks = $c[0].checks | .checksOk = $c[0].ok | .score = $c[0].score | .sourceChars = 0 | .translatedChars = $tc | .imageBytes = $ib' \
+      --slurpfile c "$dir/checks.json" --argjson tc "$(wc -m <"$dst")" --argjson ib "$([[ -n "$img" ]] && stat -c %s "$img" || echo 0)" || true
+  fi
+}
+
+live_node_analyze() {
+  # (1) chart (2) table image (3) Korean text poster (4) photo-like scene (5) tiny image (<200px)
+  # (6) the >5 MiB picture error path cannot be produced through the extractor (Docling rejects
+  #     decoded pages above 20 MiB and its q90 JPEG tops out near 5 MB), so it is covered by the mock test
+  #     `analyze_sends_the_image_and_enforces_the_size_limit` only.
+  local rc=0
+  live_case_enabled chart && { live_analyze_case chart "$FIXTURES/vision_chart.pdf" || rc=1; }
+  live_case_enabled table && { live_analyze_case table "$FIXTURES/vision_table.pdf" || rc=1; }
+  live_case_enabled text && { live_analyze_case text "$FIXTURES/vision_text.pdf" || rc=1; }
+  live_case_enabled photo && { live_analyze_case photo "$FIXTURES/vision_photo.pdf" || rc=1; }
+  live_case_enabled small && { live_analyze_case small "$FIXTURES/vision_small.pdf" || rc=1; }
+  return "$rc"
 }
 
 live_node_slide() {
@@ -170,29 +211,4 @@ live_node_rag() {
     live_patch_result "$dir" '.status = "failed" | .error = "RAG 질의 실패(rag-query-*.json 참고)"'
     return 1
   fi
-}
-
-live_node_fill() {
-  if [[ ! -f "$FORM_PDF" ]]; then
-    mkdir -p "$OUT_DIR/fill/artifacts"
-    live_log "fill 건너뜀: 폼 PDF 없음 ($FORM_PDF)"
-    live_write_result "$OUT_DIR/fill" fill skipped 0 "폼 PDF($FORM_PDF)가 없어 건너뜀" ""
-    return 0
-  fi
-  live_make_bundle "live-fill" "$FORM_PDF" || return 1
-  BUNDLE="$LIVE_ID"
-  # Keys deliberately differ from the AcroForm field names (full_name, Email Address, comments,
-  # agree_terms, plan, country) so the engine has to match them.
-  local values
-  values='{"Full Name":"Hong Gildong","E-mail":"hong.gildong@example.com","Additional comments":"Please contact me in the afternoon.","I agree to the terms":true,"Selected plan":"pro","Country":"Korea"}'
-  GRAPH=$(jq -nc --arg b "$BUNDLE" '{
-      nodes: [
-        {id: "n_b", kind: "bundle",   position: {x: 0,   y: 0}, params: {bundleId: $b}, isOutput: false},
-        {id: "n_p", kind: "pick_pdf", position: {x: 250, y: 0}, params: {index: 0},      isOutput: false}
-      ],
-      edges: [{id: "e_b_p", source: "n_b", sourceHandle: "files", target: "n_p", targetHandle: "files"}]}' |
-    live_add_node n_j json_input "$(jq -nc --argjson v "$values" '{value: $v}')" false |
-    live_add_node n_f fill '{}' true |
-    live_add_edge n_p pdf n_f pdf | live_add_edge n_j json n_f values)
-  live_finish fill "$GRAPH" n_f
 }

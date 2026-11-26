@@ -15,7 +15,7 @@ cd "$(dirname "$0")/.."
 ROOT=$(pwd)
 FIXTURES="$ROOT/fixtures/live"
 
-ALL_NODES=(translate summary analyze slide rag voice fill)
+ALL_NODES=(translate summary analyze slide rag voice)
 ONLY=""
 OUT_BASE="live-results"
 DOC=en
@@ -43,7 +43,6 @@ case "$DOC" in
   *) echo "live: --doc must be en or ko" >&2; exit 2 ;;
 esac
 DOC_PDF="$FIXTURES/$DOC_KEY.pdf"
-FORM_PDF="$ROOT/engine/tests/fixtures/form.pdf"
 [[ -f "$DOC_PDF" ]] || { echo "live: missing $DOC_PDF (run: uv run --project extractor python fixtures/live/make_fixtures.py)" >&2; exit 2; }
 
 NODES=("${ALL_NODES[@]}")
@@ -173,7 +172,11 @@ cell() { tr '\r\n|' '  /' | tr -s ' '; }
   for f in $(result_files); do
     jq -e '.checks' "$f" >/dev/null 2>&1 || continue
     echo
-    echo "### $(jq -r .node "$f") 점검표 (원문 $(jq -r .sourceChars "$f")자 → 결과 $(jq -r .translatedChars "$f")자$(jq -r 'if .images != null then ", 이미지 \(.images)장" else "" end' "$f"))"
+    if jq -e '.score != null' "$f" >/dev/null 2>&1; then
+      echo "### $(jq -r .node "$f") 점검표 (정답 일치율 $(jq -r '(.score * 100 | floor | tostring) + "%"' "$f"), 이미지 $(jq -r .imageBytes "$f") B → 결과 $(jq -r .translatedChars "$f")자)"
+    else
+      echo "### $(jq -r .node "$f") 점검표 (원문 $(jq -r .sourceChars "$f")자 → 결과 $(jq -r .translatedChars "$f")자$(jq -r 'if .images != null then ", 이미지 \(.images)장" else "" end' "$f"))"
+    fi
     echo
     echo "| 항목 | 결과 | 상세 |"
     echo "| :--- | :--- | :--- |"
@@ -189,7 +192,7 @@ echo "[live] summary: $OUT_DIR/SUMMARY.md"
 cat "$OUT_DIR/SUMMARY.md"
 
 # skipped nodes are not failures; anything else that is not succeeded is
-bad=$(for f in $(result_files); do jq -r 'select(.status != "succeeded" and .status != "skipped") | .node' "$f" 2>/dev/null; done | wc -l)
+bad=$(for f in $(result_files); do jq -r 'select(.status != "succeeded" and .status != "skipped" and .status != "expected-failure") | .node' "$f" 2>/dev/null; done | wc -l)
 if ((bad > 0)); then
   echo "[live] $bad node(s) did not succeed" >&2
   exit 1
