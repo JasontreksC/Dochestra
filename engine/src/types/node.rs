@@ -17,7 +17,6 @@ pub enum NodeKind {
     Summary,
     Slide,
     Voice,
-    Fill,
     Rag,
 }
 

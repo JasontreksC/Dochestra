@@ -160,17 +160,6 @@ fn build_catalog() -> Vec<NodeSpec> {
             json!({}),
         ),
         node(
-            NodeKind::Fill,
-            "폼 자동 입력",
-            "주어진 PDF에 정의된 폼을 인식해 자동으로 채운다. 채울 값은 JSON 키-값 쌍으로 받는다.",
-            vec![
-                socket("pdf", "PDF", pdf, true),
-                socket("values", "값(JSON)", json_t, true),
-            ],
-            vec![socket("pdf", "PDF", pdf, true)],
-            json!({}),
-        ),
-        node(
             NodeKind::Rag,
             "RAG 챗봇",
             "문서를 바탕으로 RAG를 구축하고, API 호출 정보를 JSON으로 출력한다.",
@@ -288,12 +277,6 @@ mod tests {
                 json!({}),
             ),
             (
-                NodeKind::Fill,
-                vec![("pdf", "PDF", true), ("values", "JSON", true)],
-                vec![("pdf", "PDF", true)],
-                json!({}),
-            ),
-            (
                 NodeKind::Rag,
                 vec![("md", "MD", true)],
                 vec![("api", "JSON", true)],
@@ -302,7 +285,7 @@ mod tests {
         ];
 
         let cat = catalog();
-        assert_eq!(cat.len(), 12);
+        assert_eq!(cat.len(), 11);
         for (spec, (kind, ins, outs, params)) in cat.iter().zip(table) {
             assert_eq!(spec.kind, kind, "order mismatch at {kind:?}");
             assert_eq!(actual(&spec.inputs), expected(&ins), "{kind:?} inputs");

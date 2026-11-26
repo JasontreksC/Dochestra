@@ -36,6 +36,7 @@
 - **현재 단계**: `M3 완료 → 품질 보강 / M5` (2026-11-26) — 외부 AI 7종 실 API 동작 확인(커밋 38e6449). fine: T-313(analyze 품질 보강) — T-312 완료, kobe: T-321/T-320 — T-317 완료.
 - **호스트 변경 기록**: 2026-11-26 w2-fine 이 Playwright chromium 실행을 위해 `sudo playwright install-deps chromium`(apt 시스템 패키지) 설치. 이후 sudo 를 쓰는 호스트 변경은 사전 승인 필요(CONTEXT §6.2).
 - **운영 메모**: 08:20경 오케스트레이터 hcom 세션이 pty 종료로 끊겨 T-202·T-113 보고가 유실됨 → 재연결 후 이벤트 로그에서 복구·검수.
+- **디스크 (14:4x)**: 여유 5.9GB → engine/target 30GB(오케스트레이터 worktree 검증 빌드가 경로별 산출물 누적) cargo clean 으로 35GB 확보. 규칙: worktree 검증 후 주기적으로 `cargo clean`, 빌드 전 df 확인.
 - **D-7 (2026-11-26)**: 사용자 결정으로 폼 자동 입력(fill) 기능 완전 제거 — T-307·T-317 산출물 폐기(T-322). 평면 PDF 조판 방식 제안은 채택되지 않음.
 - **디스크 고갈 (2026-11-26 11:2x)**: 루트 77G 중 100% 사용(361MB) → 링커 Bus error. 오케스트레이터 임시 검증 빌드(4.3G) 등 삭제로 32GB 확보. 원인: 동시 빌드(엔진 다중 target, CUDA 이미지, docker build cache 22GB). 규칙: 검증용 별도 CARGO_TARGET_DIR 금지, 빌드 전 `df -h /` 확인. T-307 검수는 T-309 와 합쳐 진행.
 - **교훈 (T-406)**: 검증을 localhost(보안 컨텍스트)로만 해서 사용자의 http://서버IP 접속 환경 버그를 놓침 → UI E2E 에 비-localhost 출처 테스트 상시 포함.
@@ -52,8 +53,6 @@
 ### In Progress (진행 중)
 | 티켓 ID | 마일스톤 | 상세 작업 목표 | 담당 워커 | 대상 경로 | 검증 명령어 (`verify_cmd`) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| T-322 | M3 | **[사용자 결정 D-7]** fill 노드 완전 제거: NodeKind·카탈로그·바인딩·nodes/fill·tests·fixtures·lopdf(일반 의존성)·fill_check.sh·smoke 노드 수·README, 마이그레이션 0004(저장 그래프·실행 기록 정리) | w1-kobe | `engine/**`, `web/src/bindings/**`, `scripts/{smoke.sh,live/fill_check.sh}`, `README.md` | engine 표준 검증·바인딩 재생성·verify-stack --e2e·기존 fill 포함 워크플로 로드 |
-| T-313 | M3 | analyze 실사용 품질 보강(차트·표 이미지·사진·텍스트 많은 이미지·작은 이미지, 수치 판독 정확도, 한국어 구조화) | w2-fine | `engine/src/nodes/analyze.rs`, `engine/tests/llm_nodes.rs`, `scripts/live/**`(slide_check.sh 제외), `fixtures/live/**` | live-nodes --only analyze + engine 표준 검증 |
 
 ### Blocked (보류 / 설계 조정 또는 외부 확인 필요)
 | 티켓 ID | 마일스톤 | 작업 요약 | 블로커 사유 | 해소 방안 |
@@ -117,6 +116,8 @@
 | T-317 | M3 | fill 품질 보강: 페이지 텍스트에서 필드·라디오 라벨 추출(labels.rs)→LLM 매핑 프롬프트에 포함(값 미전송 유지), 라디오 값→옵션 이름/라벨 매핑, 같은 이름 필드 전부 채움 + 폼 픽스처 3종 + scripts/live/fill_check.sh | 오케스트레이터: 깨끗한 worktree 에서 fmt·clippy·test 387·prepare 통과(1회차 executor 병렬 타이밍 테스트가 부하로 실패→재실행 3/3 통과, T-321 등록). 실 API 리포트: 4케이스 100%(9/9·9/9·9/9·15/15)·오매핑 0, 코드형 필드명 폼 22%→100% | 2026-11-26 |
 | T-321 | M2(보수) | executor 병렬 테스트를 Barrier 랑데부 방식으로 견고화(벽시계 임계값 제거) + 직렬 대조군 테스트 | 오케스트레이터: 깨끗한 worktree 에서 clippy·test 전체·executor 20회 반복 통과, prepare OK | 2026-11-26 |
 | T-320 | M3 | slide 폰트 서브셋(printpdf text_layout) → PDF 1.5MB → 35~61KB, 기존 38쪽 픽셀 동일 / common.rs backoff 테스트 가상 시계화 | 오케스트레이터: 깨끗한 worktree 에서 clippy·test 390·prepare 통과, 사용자 스택 engine 재배포. 커밋은 HEAD+T-320 변경만으로 Cargo.toml 재구성(T-322 진행분 제외)해 clippy·slide·clients 테스트 재확인 | 2026-11-26 |
+| T-313 | M3 | analyze 품질 보강: 고정 출력 구조·계산값 표시·추측 금지 프롬프트 + 이미지 5종 라이브 시나리오(사용자 지시로 적정선 종료) | 오케스트레이터: 깨끗한 worktree 에서 clippy·test 391·prepare 통과. 실 API: 차트 10/10·표 20/20·한글 포스터 11/11·소형 4/4, 환각 0. 남은 점: 사진 설명이 짧아짐(후속 후보) | 2026-11-26 |
+| T-322 | M3 | fill 노드 완전 제거(D-7): NodeKind·카탈로그 11종·바인딩·코드·테스트·픽스처, lopdf dev 전환, smoke 11, README, 0004 마이그레이션 | 오케스트레이터: T-313 와 합친 트리에서 clippy·test 349·prepare·바인딩 결정성·fill 잔존 0·web typecheck/153 통과. 사용자 스택 engine 재배포 → /api/nodes 11종, smoke PASS, 사용자 동의서 워크플로(fill 포함) GET 200·노드 [bundle,pick_pdf,json_input]·해당 런 GET 200 | 2026-11-26 |
 
 ---
 

@@ -17,7 +17,6 @@ axum = { version = "0.8", features = ["macros", "multipart"] }
 base64 = "0.23.1"
 chrono = { version = "0.4.45", features = ["serde"] }
 futures = { version = "0.3.34", default-features = false, features = ["std", "alloc"] }
-lopdf = { version = "0.47", default-features = false }
 mp3lame-encoder = "0.3.0"
 petgraph = "0.8.3"
 pgvector = { version = "0.4.2", features = ["sqlx"] }
@@ -38,9 +37,11 @@ ts-rs = { version = "12.0.1", features = ["uuid-impl", "chrono-impl", "serde-jso
 uuid = { version = "1.29.3", features = ["v4", "serde"] }
 
 [dev-dependencies]
-# `test-util`: a paused (virtual) clock, so tests of delays assert exact durations instead of wall-clock bounds.
-tokio = { version = "1.54.1", features = ["test-util"] }
 http-body-util = "0.1.5"
 image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
+# PDF inspection in tests/slide.rs (page content, fonts, extracted text)
+lopdf = { version = "0.47", default-features = false }
 symphonia = { version = "0.6.1", default-features = false, features = ["mp3"] }
+# `test-util`: a paused (virtual) clock, so tests of delays assert exact durations instead of wall-clock bounds.
+tokio = { version = "1.54.1", features = ["test-util"] }
 tower = { version = "0.5.3", features = ["util"] }

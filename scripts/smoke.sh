@@ -55,8 +55,8 @@ check "GET /editor/smoke -> 200 (SPA fallback)" \
   bash -c "test \"\$(curl -s -o /dev/null -w '%{http_code}' '$BASE_URL/editor/smoke')\" = 200"
 
 # (4) node catalog
-check "GET /api/nodes -> 12 nodes, first kind == bundle" \
-  bash -c "curl -fsS '$BASE_URL/api/nodes' | jq -e 'length == 12 and .[0].kind == \"bundle\"'"
+check "GET /api/nodes -> 11 nodes, first kind == bundle" \
+  bash -c "curl -fsS '$BASE_URL/api/nodes' | jq -e 'length == 11 and .[0].kind == \"bundle\"'"
 
 # (5) pgvector extension installed by the engine migration
 check "db has the vector extension" \

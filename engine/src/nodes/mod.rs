@@ -3,7 +3,6 @@
 pub mod analyze;
 pub mod bundle;
 pub mod extract;
-pub mod fill;
 pub mod json_input;
 pub mod pick;
 pub mod rag;
@@ -125,10 +124,6 @@ impl NodeRunner for EngineRunner {
                 let llm = self.llm.clone();
                 let font_dir = self.config.slide_font_dir.clone();
                 async move { slide::run(&llm, &font_dir, &ctx, &inputs).await }.boxed()
-            }
-            NodeKind::Fill => {
-                let llm = self.llm.clone();
-                async move { fill::run(&llm, &ctx, &inputs).await }.boxed()
             }
             NodeKind::JsonInput => async move { json_input::run(&ctx).await }.boxed(),
         }

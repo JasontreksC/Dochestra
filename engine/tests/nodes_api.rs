@@ -34,7 +34,7 @@ async fn nodes_returns_catalog() {
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     let nodes = body.as_array().unwrap();
-    assert_eq!(nodes.len(), 12);
+    assert_eq!(nodes.len(), 11);
     assert_eq!(nodes[0]["kind"], "bundle");
     assert_eq!(
         nodes[0]["outputs"][0]["dataType"],

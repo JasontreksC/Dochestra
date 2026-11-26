@@ -96,7 +96,6 @@ docker compose up -d --build --wait
 | 요약 (`summary`) | `md`: MD, `images`: LIST[JPG] *(선택)* | `md`: MD | LLM |
 | 슬라이드 생성 (`slide`) | `md`: MD, `image`: JPG | `pdf`: PDF | LLM |
 | 해설 음성 생성 (`voice`) | `md`: MD, `images`: LIST[JPG] | `mp3`: MP3 | LLM + TTS |
-| 폼 자동 입력 (`fill`) | `pdf`: PDF, `values`: JSON | `pdf`: PDF | LLM |
 | RAG 챗봇 (`rag`) | `md`: MD | `api`: JSON | 임베딩 + LLM |
 
 `RAG 챗봇` 노드는 입력 MD 를 색인하고, 질의 API 를 설명하는 JSON 을 출력합니다. 질의는 `POST /api/rag/{indexId}/query`(`{"question": "...", "topK": 5}`)로 보냅니다.
@@ -146,4 +145,5 @@ pnpm 은 `corepack enable --install-directory ~/.local/bin pnpm` 후 `export PAT
 - **인증 없음**: 로그인·사용자 구분이 없습니다. 신뢰할 수 있는 네트워크에서만 사용하세요.
 - **로컬 저장**: 업로드 PDF 와 산출물은 Docker 볼륨 `data` 에, 메타데이터는 `pgdata` 에 저장되며 외부 스토리지는 지원하지 않습니다.
 - **리소스**: Docling 변환은 CPU 와 메모리를 많이 사용하며 extractor 는 변환을 한 번에 1건씩만 처리합니다.
+- **폼 자동 입력은 제외됨**: RFP 의 '폼 자동 입력'(`fill`) 노드는 구현하지 않습니다(D-7). 이미 저장된 워크플로·실행 기록의 해당 노드는 마이그레이션 `0004` 로 제거됩니다.
 - 외부 AI 를 쓰는 노드는 OpenRouter 키와 네트워크 연결이 필요하며, 응답 품질·지연은 선택한 모델에 따릅니다.

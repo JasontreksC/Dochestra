@@ -18,6 +18,8 @@ RFP 원문만으로는 타입 체계가 닫히지 않는 지점이 있어 아래
 | D-3 | **소스 노드 추가** `json_input`(입력 없음→JSON): 사용자가 캔버스에서 편집한 JSON 값을 출력한다. | `translate`(설정)·`fill`(키-값)의 JSON 입력을 공급할 노드가 없음 | 확정 (2026-11-26 사용자) |
 | D-4 | **선택 입력 소켓**: `SocketSpec.required=false`인 소켓은 비어 있어도 실행 가능. 현재 `summary.images`만 선택 소켓. | RFP 1.5 "이미지 리스트도 넣어 요약에 보탤 수 **있다**" | 확정 (2026-11-26 사용자) |
 | D-5 | **엄격 타입 매칭**: 엣지는 `DataType`이 완전히 같을 때만 허용(`LIST[T]`↔`T` 자동 변환·자동 map 없음). | RFP 1.6 "소켓 타입이 맞지 않으면 실행하지 않는다" | 확정 |
+| D-7 | **폼 자동 입력(`fill`) 노드 제거 (2026-11-26 사용자 결정)**: RFP 1.5 의 '폼 자동 입력' 은 구현하지 않는다(AcroForm 전용 구현이 실제 서식(평면 PDF)에 맞지 않음). 카탈로그 11종. 기존 워크플로·실행 기록의 fill 노드는 마이그레이션 0004 로 제거. RFP 문서 수정은 사용자 몫. | 사용자 지시 | 확정 |
+| D-8 | **LIST 입력 소켓 다중 연결 (2026-11-26 사용자 요청)**: `LIST[T]` 타입 **입력** 소켓은 여러 엣지를 받을 수 있고, 각 엣지의 출력 타입은 `T` 또는 `LIST[T]` 허용(D-5 의 예외). 실행 시 엣지들의 값을 **graph.edges 배열 순서**대로 이어 붙여 하나의 `LIST[T]` Artifact 로 만든다. 단일 타입 입력 소켓은 기존대로 엣지 1개·완전 일치. 이에 따라 `rag.md` 소켓 타입을 `LIST[MD]` 로 변경(소켓 id 유지 → 기존 MD→md 엣지는 그대로 유효). | 사용자 요청: RAG 가 여러 MD 를 입력으로 | 확정 |
 | D-6 | **외부 공급자 (2026-11-26 사용자 변경)**: 모든 외부 AI 호출을 **OpenRouter**(OpenAI 호환 API, `https://openrouter.ai/api/v1`) 하나로 통합. 키 `OPENROUTER_API_KEY` 하나, 모델은 env: LLM `meta/muse-ember`(이미지 입력 가능), 임베딩 `baai/bge-m3`(**1024차원**), TTS `google/gemini-3.8-flash-lite-tts`(mp3 미지원 → pcm 수신 후 엔진에서 MP3 인코딩). 기존 Anthropic Messages API 직접 호출 계약(§4.3 구판)은 폐기. | RFP 2.2 "외부 API"로만 명시 | 확정 (사용자 .env 설정) |
 
 ---
@@ -68,7 +70,7 @@ Dochestra/
 │   │   ├── catalog.rs          # 노드 카탈로그(NodeSpec 목록) 단일 정의처
 │   │   ├── graph/              # validator.rs(구조·실행 전 검증), planner.rs(실행 대상 선별·위상 정보)
 │   │   ├── executor/           # mod.rs(Kahn 병렬 스케줄러), runner.rs(NodeRunner trait), events.rs(브로드캐스트 허브)
-│   │   ├── nodes/              # 노드별 구현: bundle.rs, pick.rs, json_input.rs, extract.rs, translate.rs, analyze.rs, summary.rs, slide.rs, voice.rs, fill.rs, rag.rs
+│   │   ├── nodes/              # 노드별 구현: bundle.rs, pick.rs, json_input.rs, extract.rs, translate.rs, analyze.rs, summary.rs, slide.rs, voice.rs, rag.rs
 │   │   ├── clients/            # extractor.rs, llm.rs, embedding.rs, tts.rs
 │   │   ├── storage.rs          # /data 경로 규칙 헬퍼 (§3.5)
 │   │   ├── db/                 # workflows.rs, runs.rs, bundles.rs, rag.rs (SQLx 쿼리)
@@ -133,9 +135,10 @@ pub struct DataType { pub scalar: ScalarType, pub list: bool } // LIST[JPG] == {
 - **타입 색상 (web `src/lib/socketColors.ts`, 엣지·소켓 공통)**: PDF `#E5484D`, MD `#3E63DD`, JSON `#F5A524`, CSV `#30A46C`, JPG `#8E4EC6`, MP3 `#12A594`. LIST 타입은 같은 색 + 소켓은 사각형, 엣지는 두께 3px(단일 2px).
 
 ### 3.3. 노드 카탈로그 (`catalog.rs` — 단일 정의처)
+> 2026-11-26 D-7: `fill` 제거 → **11종**.
 ```rust
 #[serde(rename_all = "snake_case")]
-pub enum NodeKind { Bundle, PickPdf, PickJpg, JsonInput, Extract, Translate, Analyze, Summary, Slide, Voice, Fill, Rag }
+pub enum NodeKind { Bundle, PickPdf, PickJpg, JsonInput, Extract, Translate, Analyze, Summary, Slide, Voice, Rag }
 
 pub struct SocketSpec { pub id: String, pub label: String, pub data_type: DataType, pub required: bool }
 pub struct NodeSpec   { pub kind: NodeKind, pub label: String, pub description: String,
@@ -155,8 +158,7 @@ pub struct NodeSpec   { pub kind: NodeKind, pub label: String, pub description: 
 | `summary` | 요약 | `md`: MD, `images`: LIST[JPG] (required=false, D-4) | `md`: MD | `{}` |
 | `slide` | 슬라이드 생성 | `md`: MD, `image`: JPG | `pdf`: PDF | `{}` |
 | `voice` | 해설 음성 생성 | `md`: MD, `images`: LIST[JPG] | `mp3`: MP3 | `{}` |
-| `fill` | 폼 자동 입력 | `pdf`: PDF, `values`: JSON | `pdf`: PDF | `{}` |
-| `rag` | RAG 챗봇 | `md`: MD | `api`: JSON | `{}` |
+| `rag` | RAG 챗봇 | `md`: LIST[MD] (D-8: MD·LIST[MD] 엣지 여러 개) | `api`: JSON | `{}` |
 
 - 모든 소켓은 `required=true`가 기본이며 예외는 표에 명시된 것만.
 - React Flow의 `sourceHandle`/`targetHandle` 값 = 소켓 `id`.
@@ -219,8 +221,8 @@ pub struct WorkflowGraph { pub nodes: Vec<GraphNode>, pub edges: Vec<GraphEdge> 
 | `DUPLICATE_ID` | `id` | 저장·실행 |
 | `UNKNOWN_NODE` (엣지가 존재하지 않는 노드를 참조) | `edgeId`, `nodeId` | 저장·실행 |
 | `UNKNOWN_SOCKET` | `edgeId`, `nodeId`, `socketId` | 저장·실행 |
-| `TYPE_MISMATCH` | `edgeId`, `expected: DataType`, `actual: DataType` | 저장·실행 |
-| `MULTIPLE_INCOMING` | `nodeId`, `socketId` | 저장·실행 |
+| `TYPE_MISMATCH` | `edgeId`, `expected: DataType`, `actual: DataType` (입력이 `LIST[T]` 면 출력 `T`·`LIST[T]` 모두 허용 — D-8) | 저장·실행 |
+| `MULTIPLE_INCOMING` | `nodeId`, `socketId` (**단일 타입 입력 소켓에만** 적용, LIST 입력은 다중 허용 — D-8) | 저장·실행 |
 | `CYCLE_DETECTED` | `nodeIds: string[]` | 실행 |
 | `NO_OUTPUT_NODE` | — | 실행 |
 | `UNCONNECTED_INPUT` | `nodeId`, `socketId` (실행 대상 노드의 required 소켓만) | 실행 |
@@ -311,6 +313,7 @@ pub enum RunEvent {
 - **TTS**: `POST /audio/speech` `{ model: TTS_MODEL, input, voice: TTS_VOICE, response_format: "pcm" }` → 응답 `audio/pcm;rate=<Hz>;channels=<n>` 16-bit LE 원시 PCM(관측: 24000Hz mono). 청크(최대 4000자, 문장 경계)별 PCM 을 순서대로 이어 붙인 뒤 **엔진이 한 번에 MP3 로 인코딩**(rate/channels 는 응답 헤더에서 파싱, 청크 간 불일치 시 오류). 기본 모델 `google/gemini-3.8-flash-lite-tts`, 기본 음성 `Kore`(OpenAI 음성명 `alloy` 등은 이 모델에서 400).
 - **RAG 노드 출력 JSON·RAG 질의 API**: 형식 동일(§ 이전 정의 유지), 단 임베딩 차원 1024, 답변 생성은 위 LLM 사용.
 - **RAG 노드 출력 JSON (`api` 소켓)**: `{ "type": "rag_api", "indexId": "<uuid>", "method": "POST", "endpoint": "/api/rag/<indexId>/query", "request": { "question": "string", "topK": "number (선택, 기본 5, 1~20)" }, "chunkCount": N, "embeddingModel": "..." }`
+- **RAG 다중 문서 (D-8, T-323)**: rag 노드는 입력 LIST[MD] 의 각 문서를 따로 청킹하고 청크에 `doc_index`(0부터, 입력 순서)·`doc_title`(문서 첫 Markdown 제목 또는 첫 줄, 80자 이내, 없으면 '문서 N')을 저장(마이그레이션 `0005_rag_chunk_documents.sql`: `rag_chunks` 에 `doc_index INTEGER NOT NULL DEFAULT 0`, `doc_title TEXT NOT NULL DEFAULT ''`). `RagSource` 에 `docIndex: number`, `docTitle: string` 추가(ts-rs). api JSON 에 `"documents": [{"index", "title", "chunkCount"}]` 추가. 답변 프롬프트의 근거 표기는 [n] 유지, 각 근거 앞에 문서 제목을 함께 제시.
 - **RAG 질의 (`POST /api/rag/{indexId}/query`)**: question 1~2000자, topK 1~20(기본 5) 위반 400 / 인덱스 없음 404 / 질문 임베딩 → pgvector 코사인 거리 상위 topK → score = 1 - distance → LLM 에 [번호] 청크와 질문 → `RagQueryResponse`. 임베딩/LLM 실패·키 미설정 → 502 UPSTREAM.
 - **voice 노드**: md + images → LLM 해설 대본(한국어 구어체, 1500~2500자, 이미지 규칙 20개·5MiB·30MiB) → `_work/script.txt` → TTS(pcm) → MP3 인코딩 → `mp3.mp3`.
 ---
@@ -390,6 +393,7 @@ CREATE TABLE rag_chunks (
 CREATE INDEX rag_chunks_index_idx ON rag_chunks (index_id, chunk_index);
 CREATE INDEX rag_chunks_embedding_idx ON rag_chunks USING hnsw (embedding vector_cosine_ops);
 ```
+- `0004_remove_fill_nodes.sql`(T-322): `workflows.graph`·`runs.graph_snapshot` JSONB 에서 kind='fill' 노드와 그 노드를 참조하는 엣지 제거, `node_runs` 의 kind='fill' 행 삭제.
 - 임베딩 차원은 `0003` 마이그레이션으로 **1024** 로 변경(T-309). 변경은 신규 마이그레이션으로만.
 - 엔진 재시작 시 `status='running'`으로 남은 런은 `failed`로 정리한다(T-205): 해당 런의 `running` 노드 → `failed`(error '엔진 재시작으로 중단됨'), `pending` 노드 → `skipped`.
 
