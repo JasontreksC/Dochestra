@@ -33,7 +33,7 @@
 
 ## 2. 현재 활성 상태 요약
 
-- **현재 단계**: `M3 진행` (2026-11-26) — T-304 Done(커밋 acf22bf). 트랙 R은 T-306(slide). fine 은 hcom 미접속.
+- **현재 단계**: `M3 진행` (2026-11-26) — T-304 Done(커밋 acf22bf). 트랙 R은 T-307(fill, M3 마지막). fine 은 hcom 미접속.
 - **호스트 변경 기록**: 2026-11-26 w2-fine 이 Playwright chromium 실행을 위해 `sudo playwright install-deps chromium`(apt 시스템 패키지) 설치. 이후 sudo 를 쓰는 호스트 변경은 사전 승인 필요(CONTEXT §6.2).
 - **운영 메모**: 08:20경 오케스트레이터 hcom 세션이 pty 종료로 끊겨 T-202·T-113 보고가 유실됨 → 재연결 후 이벤트 로그에서 복구·검수.
 - **교훈 (T-406)**: 검증을 localhost(보안 컨텍스트)로만 해서 사용자의 http://서버IP 접속 환경 버그를 놓침 → UI E2E 에 비-localhost 출처 테스트 상시 포함.
@@ -50,7 +50,7 @@
 ### In Progress (진행 중)
 | 티켓 ID | 마일스톤 | 상세 작업 목표 | 담당 워커 | 대상 경로 | 검증 명령어 (`verify_cmd`) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| T-306 | M3 | slide 노드: Claude 슬라이드 구성(JSON) → Rust PDF 렌더(16:9, 한글 폰트 내장, 입력 이미지 슬라이드) | w1-kobe | `engine/src/nodes/{mod,slide}.rs`, `engine/assets/fonts/**`, `engine/Dockerfile`, `engine/Cargo.{toml,lock}`, `engine/src/config.rs`, `engine/tests/slide.rs` | engine 표준 검증 + 생성 PDF 구조 검사 |
+| T-307 | M3 | fill 노드: AcroForm 필드 인식 → 키 매칭(정확/정규화 → 남은 키는 Claude 매핑) → 값 채움(텍스트·체크박스·선택) → PDF + 리포트 | w1-kobe | `engine/src/nodes/{mod,fill}.rs`(필요 시 fill/ 하위), `engine/Cargo.{toml,lock}`, `engine/tests/{fill.rs,fixtures/**}` | engine 표준 검증 + 채워진 PDF 필드값 검사 |
 
 ### Blocked (보류 / 설계 조정 또는 외부 확인 필요)
 | 티켓 ID | 마일스톤 | 작업 요약 | 블로커 사유 | 해소 방안 |
@@ -60,7 +60,6 @@
 ### Pending (대기 중)
 | 티켓 ID | 마일스톤 | 트랙 | 상세 작업 목표 | 선행 티켓 | 대상 경로 | 검증 조건 및 명령어 (`verify_cmd`) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| T-307 | M3 | R | fill 노드(AcroForm 필드 인식·채움, lopdf) | T-301 | `engine/src/nodes/fill.rs` | 폼 PDF 픽스처 테스트 |
 | T-502 | M5 | I | README(실행 방법·아키텍처·.env 설정·검증 스크립트 사용법) | T-116 | `README.md` | 수동 검토 |
 
 ### Done (검수 완료)
@@ -96,6 +95,7 @@
 | T-304 | M3 | OpenAI 임베딩 클라이언트 + rag 노드(청킹·pgvector) + RAG 질의 API(검색+Claude 답변) | 오케스트레이터 재실행: cargo test 255(rag 12), prepare --check·docker build OK. 사용자 스택 engine 재배포·smoke PASS. 커밋 acf22bf | 2026-11-26 |
 | T-305 | M3 | 공용 재시도·키 마스킹 모듈(common.rs) + OpenAI TTS 클라이언트(4000자 분할·결합) + voice 노드(대본→MP3) | 오케스트레이터 재실행: cargo test 281(voice 11, 기존 llm/rag 무수정 통과), prepare --check·docker build OK. 사용자 스택 engine 재배포·smoke PASS | 2026-11-26 |
 | T-406 | M4(보수) | 노드 배치 UX: 팔레트 드래그 앤 드롭, 클릭 추가 시 겹침 회피·자동 선택·뷰 이동, fitView maxZoom 1 + **비보안 컨텍스트(http://서버IP)에서 crypto.randomUUID 부재로 노드/엣지 추가 불가 버그 수정**(lib/ids.ts newId 폴백) | 오케스트레이터 재실행: web test 130·lint·typecheck·build 통과. 사용자 스택 web 재배포 후 http://<서버IP>(isSecureContext=false)에서 클릭 추가 2·드롭 1·엣지 연결·인스펙터 표시·겹침 없음·페이지 에러 0 확인 | 2026-11-26 |
+| T-306 | M3 | slide 노드: Claude 구성 JSON(검증·1회 재요청) → printpdf 16:9 렌더(나눔고딕 OFL 내장, 표지·본문·이미지 슬라이드, 페이지 번호) | 오케스트레이터 재실행: cargo test 306(slide 14), prepare --check·docker build OK, 컨테이너 폰트 존재 확인. 사용자 스택 engine 재배포·smoke PASS | 2026-11-26 |
 
 ---
 

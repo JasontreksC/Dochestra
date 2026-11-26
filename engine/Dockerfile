@@ -25,6 +25,8 @@ RUN apt-get update \
     && mkdir -p /data \
     && chown 10001:10001 /data
 COPY --from=builder /app/target/release/dochestra-engine /usr/local/bin/dochestra-engine
+# Fonts for the slide node (SIL OFL; see assets/fonts/OFL.txt).
+COPY assets/fonts /usr/local/share/dochestra/fonts
 USER dochestra
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/dochestra-engine"]

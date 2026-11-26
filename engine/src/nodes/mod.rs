@@ -6,6 +6,7 @@ pub mod extract;
 pub mod json_input;
 pub mod pick;
 pub mod rag;
+pub mod slide;
 pub mod summary;
 pub mod translate;
 pub mod voice;
@@ -119,6 +120,11 @@ impl NodeRunner for EngineRunner {
                 let llm = self.llm.clone();
                 let tts = self.tts.clone();
                 async move { voice::run(&llm, &tts, &ctx, &inputs).await }.boxed()
+            }
+            NodeKind::Slide => {
+                let llm = self.llm.clone();
+                let font_dir = self.config.slide_font_dir.clone();
+                async move { slide::run(&llm, &font_dir, &ctx, &inputs).await }.boxed()
             }
             NodeKind::JsonInput => async move { json_input::run(&ctx).await }.boxed(),
             _ => UnimplementedRunner.run(ctx, inputs),

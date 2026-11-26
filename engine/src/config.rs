@@ -18,6 +18,8 @@ const DEFAULT_EMBEDDING_MODEL: &str = "text-embedding-3-small";
 const DEFAULT_TTS_BASE_URL: &str = "https://api.openai.com";
 const DEFAULT_TTS_MODEL: &str = "tts-1";
 const DEFAULT_TTS_VOICE: &str = "alloy";
+/// Where the container image keeps the slide fonts.
+const CONTAINER_FONT_DIR: &str = "/usr/local/share/dochestra/fonts";
 const DEFAULT_UPLOAD_LIMIT_BYTES: usize = 200 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -59,6 +61,8 @@ pub struct Config {
     pub tts_base_url: String,
     pub tts_model: String,
     pub tts_voice: String,
+    /// Directory with the slide fonts (`SLIDE_FONT_DIR`).
+    pub slide_font_dir: PathBuf,
 }
 
 // Manual `Debug` so that logging a `Config` can never reveal the API key.
@@ -93,6 +97,7 @@ impl std::fmt::Debug for Config {
             .field("tts_base_url", &self.tts_base_url)
             .field("tts_model", &self.tts_model)
             .field("tts_voice", &self.tts_voice)
+            .field("slide_font_dir", &self.slide_font_dir)
             .finish()
     }
 }
@@ -209,6 +214,10 @@ impl Config {
         let tts_model = get("TTS_MODEL").unwrap_or_else(|| DEFAULT_TTS_MODEL.to_owned());
         let tts_voice = get("TTS_VOICE").unwrap_or_else(|| DEFAULT_TTS_VOICE.to_owned());
 
+        let slide_font_dir = get("SLIDE_FONT_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(default_font_dir);
+
         Ok(Self {
             database_url,
             extractor_url,
@@ -229,7 +238,19 @@ impl Config {
             tts_base_url,
             tts_model,
             tts_voice,
+            slide_font_dir,
         })
+    }
+}
+
+/// The container's font directory when it exists, else the repository's `assets/fonts` (local
+/// runs and tests).
+fn default_font_dir() -> PathBuf {
+    let container = PathBuf::from(CONTAINER_FONT_DIR);
+    if container.is_dir() {
+        container
+    } else {
+        PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/fonts"))
     }
 }
 
@@ -277,6 +298,22 @@ mod tests {
         assert_eq!(cfg.tts_base_url, "https://api.openai.com");
         assert_eq!(cfg.tts_model, "tts-1");
         assert_eq!(cfg.tts_voice, "alloy");
+    }
+
+    #[test]
+    fn slide_font_dir_defaults_and_overrides() {
+        let cfg = Config::from_lookup(lookup(&[("DATABASE_URL", "postgres://x")])).unwrap();
+        assert!(
+            cfg.slide_font_dir.join("NanumGothic-Regular.ttf").is_file(),
+            "{:?}",
+            cfg.slide_font_dir
+        );
+        let cfg = Config::from_lookup(lookup(&[
+            ("DATABASE_URL", "postgres://x"),
+            ("SLIDE_FONT_DIR", "/custom/fonts"),
+        ]))
+        .unwrap();
+        assert_eq!(cfg.slide_font_dir, PathBuf::from("/custom/fonts"));
     }
 
     #[test]

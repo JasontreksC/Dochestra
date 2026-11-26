@@ -19,6 +19,7 @@ chrono = { version = "0.4.45", features = ["serde"] }
 futures = { version = "0.3.34", default-features = false, features = ["std", "alloc"] }
 petgraph = "0.8.3"
 pgvector = { version = "0.4.2", features = ["sqlx"] }
+printpdf = { version = "0.13.0", default-features = false, features = ["jpeg"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
@@ -34,4 +35,6 @@ uuid = { version = "1.29.3", features = ["v4", "serde"] }
 
 [dev-dependencies]
 http-body-util = "0.1.5"
+image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
+lopdf = "0.47.0"
 tower = { version = "0.5.3", features = ["util"] }
