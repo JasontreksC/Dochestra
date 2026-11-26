@@ -311,7 +311,8 @@ pub enum RunEvent {
   - 응답: `content[]` 중 `type=="text"` 블록만 이어붙임(thinking·fallback 블록 무시). `stop_reason`: `end_turn` 정상, `refusal` → 노드 실패('LLM 이 요청을 거절했습니다 ({stop_details.category})'), `max_tokens` → 노드 실패('LLM 출력이 최대 길이에 도달했습니다').
   - 오류: 429·500·502·503·529·연결 오류는 최대 3회 재시도(지수 백오프 1s/2s/4s, `retry-after` 헤더 우선), 그 외 4xx 는 즉시 실패 — 메시지는 응답 `error.message`.
 - **OpenAI 임베딩 (T-304)**: `POST {EMBEDDING_BASE_URL}/v1/embeddings`, 헤더 `Authorization: Bearer {EMBEDDING_API_KEY}`, 본문 `{ model, input: [문자열...], encoding_format: "float" }`, 응답 `data[].{index, embedding}` (index 로 정렬). 모델 기본 `text-embedding-3-small`, 차원 **1536 고정**(다르면 오류). 요청당 최대 96개·총 200,000자. 오류 본문 `{error:{message}}`. 재시도 규칙은 Claude 와 동일(429·5xx·연결 오류 3회).
-- **OpenAI TTS (T-305)**: `POST {TTS_BASE_URL}/v1/audio/speech`, 본문 `{ model, input, voice, response_format: "mp3" }`, 응답 바이너리 MP3. 기본 모델 `tts-1`, 기본 음성 `alloy`(env 로 변경). 상세는 T-305 에서.
+- **OpenAI TTS (T-305)**: `POST {TTS_BASE_URL}/v1/audio/speech`, 헤더 `Authorization: Bearer {TTS_API_KEY}`, 본문 `{ model, input, voice, response_format: "mp3" }`, 응답 바이너리 MP3. 기본 모델 `tts-1`, 기본 음성 `alloy`. 요청당 input 최대 4000자 — 초과 텍스트는 문장 경계로 분할해 순차 합성 후 MP3 바이트를 순서대로 이어붙인다.
+- **voice 노드**: md + images(LIST[JPG]) → Claude 로 한국어 구어체 해설 대본 생성(마크다운·기호 없이 문장만, 약 1500~2500자, 이미지는 summary 와 같은 20개·5MiB·30MiB 예산 규칙) → `_work/script.txt` 저장 → TTS → `mp3.mp3`.
 - **RAG 노드 출력 JSON (`api` 소켓)**: `{ "type": "rag_api", "indexId": "<uuid>", "method": "POST", "endpoint": "/api/rag/<indexId>/query", "request": { "question": "string", "topK": "number (선택, 기본 5, 1~20)" }, "chunkCount": N, "embeddingModel": "..." }`
 - **RAG 질의 (`POST /api/rag/{indexId}/query`)**: question 1~2000자, topK 1~20(기본 5) 위반 400 / 인덱스 없음 404 / 질문 임베딩 → pgvector 코사인 거리(`<=>`) 상위 topK → score = 1 - distance → Claude 에 검색 청크를 [번호] 와 함께 넣어 답변 생성(질문 언어로, 제공 문맥 밖 정보 금지, 근거 [n] 표기, 관련 내용 없으면 그렇다고 답함) → `RagQueryResponse`. 임베딩/LLM 실패·키 미설정 → 502 UPSTREAM.
 
@@ -436,7 +437,7 @@ ALTER TABLE node_runs ADD COLUMN seq INTEGER NOT NULL DEFAULT 0;  -- ExecutionPl
 - **호스트 시스템 변경 금지**: `sudo`, apt, 전역 설치 등 저장소·사용자 홈 밖을 바꾸는 작업은 오케스트레이터(→사용자) 사전 승인 없이 하지 않는다. 필요하면 BLOCKED 로 보고. (2026-11-26 Playwright install-deps 가 승인 없이 실행된 뒤 신설)
 - **Compose 스택 소유 규칙 (2026-11-26 db 기동 실패 사고 후 개정, 10:18 재개정)**: 기본 프로젝트 `dochestra`(호스트 포트 80)는 **사용자가 상시 확인하는 스택**이며 **오케스트레이터가 운영**한다 — engine/web/extractor 티켓을 승인할 때마다 오케스트레이터가 **검증을 통과한 이미지로** 재배포(`docker compose build <svc>` 또는 검증 시 만든 승인 이미지 사용 → `docker compose up -d --no-build --wait` → `./scripts/smoke.sh`). 작업 트리에 다른 워커의 미완성 코드가 있으면 그 서비스는 마지막 승인 이미지를 유지한다. 워커는 이 프로젝트에 `up`/`down`/`restart` 등 어떤 compose 명령도 실행하지 않는다(`ps`·`logs` 조회만 허용). 워커·오케스트레이터의 통합 검증은 `scripts/verify-stack.sh`(T-114)만 사용 — 별도 프로젝트 `dochestra-verify`, 호스트 포트 `WEB_PORT=18080`, 전용 볼륨(종료 시 `down -v`), `flock`으로 동시 실행 직렬화.
   - 사고 원인: 08:47 사용자의 `docker compose up`과 워커(T-403 수동 확인)의 `docker compose up --build --wait`가 같은 프로젝트에서 동시에 실행되어 db 컨테이너가 생성 1초 만에 제거됨 → 사용자 측 `dependency db failed to start`.
-- **커밋 정책**: 워커는 `git commit`/`git push`를 하지 않는다. 변경은 작업 트리에 남기고 보고하며, 커밋은 오케스트레이터 검수 후 사용자 승인으로 진행한다.
+- **커밋 정책 (2026-11-26 사용자 확정)**: 워커는 `git commit`/`git push`를 하지 않는다. 오케스트레이터가 티켓 승인 시점마다 로컬 브랜치 `dev/integration` 에 **검증 통과한 내용만** 커밋한다(다른 워커의 진행 중 파일은 index 에서 제외). **원격 푸시·PR 금지.**
 
 ### 6.3. 코딩 컨벤션
 - **Rust**: `rustfmt` 기본 설정, `clippy -D warnings`. 라이브러리 에러는 `thiserror`, 바이너리 진입부만 `anyhow`. `unwrap()`/`expect()`는 테스트·초기화 코드 외 금지. 노드 실행마다 `tracing::info_span!("node", run_id, node_id, kind)`.

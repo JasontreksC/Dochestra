@@ -8,8 +8,9 @@ pub mod pick;
 pub mod rag;
 pub mod summary;
 pub mod translate;
+pub mod voice;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use futures::FutureExt;
@@ -18,7 +19,8 @@ use sqlx::PgPool;
 
 use crate::clients::embedding::EmbeddingClient;
 use crate::clients::extractor::ExtractorClient;
-use crate::clients::llm::LlmClient;
+use crate::clients::llm::{LlmClient, base64_len};
+use crate::clients::tts::TtsClient;
 use crate::config::Config;
 use crate::executor::runner::{
     Artifact, NodeContext, NodeError, NodeInputs, NodeOutputs, NodeRunner, UnimplementedRunner,
@@ -35,6 +37,7 @@ pub struct EngineRunner {
     pub extractor: ExtractorClient,
     pub llm: LlmClient,
     pub embedder: EmbeddingClient,
+    pub tts: TtsClient,
 }
 
 impl EngineRunner {
@@ -57,6 +60,13 @@ impl EngineRunner {
             config.embedding_api_key.clone(),
             config.embedding_model.clone(),
         );
+        let tts = TtsClient::new(
+            http.clone(),
+            config.tts_base_url.clone(),
+            config.tts_api_key.clone(),
+            config.tts_model.clone(),
+            config.tts_voice.clone(),
+        );
         Self {
             db,
             config,
@@ -64,6 +74,7 @@ impl EngineRunner {
             extractor,
             llm,
             embedder,
+            tts,
         }
     }
 }
@@ -103,6 +114,11 @@ impl NodeRunner for EngineRunner {
                 let db = self.db.clone();
                 let embedder = self.embedder.clone();
                 async move { rag::run(&db, &embedder, &ctx, &inputs).await }.boxed()
+            }
+            NodeKind::Voice => {
+                let llm = self.llm.clone();
+                let tts = self.tts.clone();
+                async move { voice::run(&llm, &tts, &ctx, &inputs).await }.boxed()
             }
             NodeKind::JsonInput => async move { json_input::run(&ctx).await }.boxed(),
             _ => UnimplementedRunner.run(ctx, inputs),
@@ -150,4 +166,56 @@ pub(crate) async fn write_md(ctx: &NodeContext, text: &str) -> Result<NodeOutput
             paths: vec![path],
         },
     )]))
+}
+
+/// At most this many images are sent along with a document.
+pub const MAX_IMAGES: usize = 20;
+
+/// Images chosen for an LLM request.
+pub(crate) struct SelectedImages {
+    pub images: Vec<Vec<u8>>,
+    /// Images left out (count limit, size limit or request budget).
+    pub excluded: usize,
+}
+
+/// Takes images in order within a request budget of `remaining` bytes (base64 size).
+///
+/// An image above [`MAX_IMAGE_BYTES`] on its own is skipped; the first one that no longer fits
+/// the budget — or that exceeds [`MAX_IMAGES`] — ends the selection (all later images are
+/// excluded). Only the images that are kept are read from disk.
+pub(crate) async fn select_images(
+    paths: &[PathBuf],
+    mut remaining: usize,
+) -> Result<SelectedImages, NodeError> {
+    let mut images: Vec<Vec<u8>> = Vec::new();
+    let mut excluded = 0usize;
+    let mut budget_exhausted = false;
+    for path in paths {
+        if budget_exhausted || images.len() >= MAX_IMAGES {
+            excluded += 1;
+            continue;
+        }
+        let size = tokio::fs::metadata(path)
+            .await
+            .map_err(|e| {
+                NodeError::Failed(format!(
+                    "이미지를 읽을 수 없습니다 ({}): {e}",
+                    path.display()
+                ))
+            })?
+            .len();
+        if size > MAX_IMAGE_BYTES {
+            excluded += 1;
+            continue;
+        }
+        let cost = base64_len(usize::try_from(size).unwrap_or(usize::MAX));
+        if cost > remaining {
+            budget_exhausted = true;
+            excluded += 1;
+            continue;
+        }
+        remaining -= cost;
+        images.push(read_image(path).await?);
+    }
+    Ok(SelectedImages { images, excluded })
 }

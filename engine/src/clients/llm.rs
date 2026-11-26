@@ -4,19 +4,16 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use reqwest::StatusCode;
-use reqwest::header::RETRY_AFTER;
 use serde_json::{Value, json};
+
+use super::common::{
+    DEFAULT_BACKOFF_BASE, Failure, error_message, parse_retry_after, retry, scrub_secret,
+};
 
 const ANTHROPIC_VERSION: &str = "2026-10-21";
 const ANTHROPIC_BETA: &str = "server-side-fallback-2026-07-01";
 const MAX_TOKENS: u32 = 16_000;
-const MAX_RETRIES: u32 = 3;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
-const DEFAULT_BACKOFF_BASE: Duration = Duration::from_secs(1);
-/// Upper bound for a server-supplied `retry-after`.
-const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
-const MESSAGE_PREVIEW_CHARS: usize = 300;
 /// Fixed allowance for JSON structure, `model`, `output_config`, … in the size estimate.
 const REQUEST_OVERHEAD_BYTES: usize = 4 * 1024;
 
@@ -124,25 +121,11 @@ impl LlmClient {
         let body = self.build_body(&req);
         let url = format!("{}/v1/messages", self.base_url);
 
-        let mut attempt = 0u32;
-        loop {
-            let outcome = self.send_once(&url, api_key, &body).await;
-            let (error, retry_after) = match outcome {
-                Ok(text) => return Ok(text),
-                Err(failure) => failure,
-            };
-            if !error.retryable || attempt >= MAX_RETRIES {
-                return Err(self.redact_error(error.error, api_key));
-            }
-            let delay = retry_after.unwrap_or_else(|| self.backoff_base * 2u32.pow(attempt));
-            tracing::warn!(
-                attempt = attempt + 1,
-                delay_ms = delay.as_millis(),
-                "LLM request failed; retrying"
-            );
-            tokio::time::sleep(delay).await;
-            attempt += 1;
-        }
+        retry("LLM", self.backoff_base, || {
+            self.send_once(&url, api_key, &body)
+        })
+        .await
+        .map_err(|error| self.redact_error(error, api_key))
     }
 
     fn build_body(&self, req: &LlmRequest) -> Value {
@@ -179,7 +162,7 @@ impl LlmClient {
         url: &str,
         api_key: &str,
         body: &Value,
-    ) -> Result<String, (Failure, Option<Duration>)> {
+    ) -> Result<String, Failure<LlmError>> {
         let response = self
             .http
             .post(url)
@@ -190,55 +173,31 @@ impl LlmClient {
             .json(body)
             .send()
             .await
-            .map_err(|err| {
-                let retryable = err.is_connect();
-                (
-                    Failure {
-                        error: LlmError::Transport(err.to_string()),
-                        retryable,
-                    },
-                    None,
-                )
-            })?;
+            .map_err(|err| Failure::transport(&err, LlmError::Transport))?;
 
         let status = response.status();
         let retry_after = parse_retry_after(&response);
-        let text = response.text().await.map_err(|err| {
-            (
-                Failure {
-                    error: LlmError::Transport(err.to_string()),
-                    retryable: false,
-                },
-                None,
-            )
-        })?;
+        let text = response
+            .text()
+            .await
+            .map_err(|err| Failure::fatal(LlmError::Transport(err.to_string())))?;
 
         if status.is_success() {
-            return parse_success(&text).map_err(|error| {
-                (
-                    Failure {
-                        error,
-                        retryable: false,
-                    },
-                    None,
-                )
-            });
+            return parse_success(&text).map_err(Failure::fatal);
         }
-        Err((
-            Failure {
-                error: LlmError::Api {
-                    status: status.as_u16(),
-                    message: error_message(&text),
-                },
-                retryable: is_retryable(status),
+        Err(Failure::http(
+            LlmError::Api {
+                status: status.as_u16(),
+                message: error_message(&text),
             },
+            status,
             retry_after,
         ))
     }
 
     /// Defense in depth: scrub the key from any message before it can reach logs or users.
     fn redact_error(&self, error: LlmError, api_key: &str) -> LlmError {
-        let scrub = |s: String| s.replace(api_key, "***");
+        let scrub = |s: String| scrub_secret(s, api_key);
         match error {
             LlmError::Api { status, message } => LlmError::Api {
                 status,
@@ -249,11 +208,6 @@ impl LlmClient {
             other => other,
         }
     }
-}
-
-struct Failure {
-    error: LlmError,
-    retryable: bool,
 }
 
 /// Estimated size in bytes of the request body: UTF-8 text plus base64 image data plus a fixed
@@ -273,33 +227,6 @@ pub fn estimate_request_bytes(system: &str, blocks: &[UserBlock]) -> usize {
 /// Length of the padded base64 encoding of `n` bytes: `4 * ceil(n / 3)`.
 pub fn base64_len(n: usize) -> usize {
     4 * n.div_ceil(3)
-}
-
-fn is_retryable(status: StatusCode) -> bool {
-    matches!(status.as_u16(), 429 | 500 | 502 | 503 | 529)
-}
-
-fn parse_retry_after(response: &reqwest::Response) -> Option<Duration> {
-    let seconds: f64 = response
-        .headers()
-        .get(RETRY_AFTER)?
-        .to_str()
-        .ok()?
-        .trim()
-        .parse()
-        .ok()?;
-    if !seconds.is_finite() || seconds < 0.0 {
-        return None;
-    }
-    Some(Duration::from_secs_f64(seconds).min(MAX_RETRY_AFTER))
-}
-
-/// `error.message` of an Anthropic error body, else the first 300 chars of the body.
-fn error_message(body: &str) -> String {
-    serde_json::from_str::<Value>(body)
-        .ok()
-        .and_then(|v| v["error"]["message"].as_str().map(str::to_owned))
-        .unwrap_or_else(|| body.chars().take(MESSAGE_PREVIEW_CHARS).collect())
 }
 
 fn parse_success(body: &str) -> Result<String, LlmError> {
@@ -334,18 +261,6 @@ fn parse_success(body: &str) -> Result<String, LlmError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn error_message_prefers_error_message_field() {
-        assert_eq!(
-            error_message(
-                r#"{"type":"error","error":{"type":"invalid_request_error","message":"bad model"}}"#
-            ),
-            "bad model"
-        );
-        assert_eq!(error_message("upstream down"), "upstream down");
-        assert_eq!(error_message(&"x".repeat(1000)).chars().count(), 300);
-    }
 
     #[test]
     fn success_parsing_covers_stop_reasons_and_block_types() {
@@ -400,16 +315,6 @@ mod tests {
             LlmError::MaxTokens.to_string(),
             "LLM 출력이 최대 길이에 도달했습니다"
         );
-    }
-
-    #[test]
-    fn retryable_statuses() {
-        for code in [429, 500, 502, 503, 529] {
-            assert!(is_retryable(StatusCode::from_u16(code).unwrap()), "{code}");
-        }
-        for code in [400, 401, 403, 404, 413, 422] {
-            assert!(!is_retryable(StatusCode::from_u16(code).unwrap()), "{code}");
-        }
     }
 
     #[test]

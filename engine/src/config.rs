@@ -15,6 +15,9 @@ const DEFAULT_LLM_EFFORT: &str = "high";
 const LLM_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 const DEFAULT_EMBEDDING_BASE_URL: &str = "https://api.openai.com";
 const DEFAULT_EMBEDDING_MODEL: &str = "text-embedding-3-small";
+const DEFAULT_TTS_BASE_URL: &str = "https://api.openai.com";
+const DEFAULT_TTS_MODEL: &str = "tts-1";
+const DEFAULT_TTS_VOICE: &str = "alloy";
 const DEFAULT_UPLOAD_LIMIT_BYTES: usize = 200 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -51,6 +54,11 @@ pub struct Config {
     pub embedding_api_key: Option<String>,
     pub embedding_base_url: String,
     pub embedding_model: String,
+    /// OpenAI API key for text-to-speech (`TTS_API_KEY`); `None` makes the voice node fail.
+    pub tts_api_key: Option<String>,
+    pub tts_base_url: String,
+    pub tts_model: String,
+    pub tts_voice: String,
 }
 
 // Manual `Debug` so that logging a `Config` can never reveal the API key.
@@ -78,6 +86,13 @@ impl std::fmt::Debug for Config {
             )
             .field("embedding_base_url", &self.embedding_base_url)
             .field("embedding_model", &self.embedding_model)
+            .field(
+                "tts_api_key",
+                &self.tts_api_key.as_ref().map(|_| "<redacted>"),
+            )
+            .field("tts_base_url", &self.tts_base_url)
+            .field("tts_model", &self.tts_model)
+            .field("tts_voice", &self.tts_voice)
             .finish()
     }
 }
@@ -186,6 +201,14 @@ impl Config {
         let embedding_model =
             get("EMBEDDING_MODEL").unwrap_or_else(|| DEFAULT_EMBEDDING_MODEL.to_owned());
 
+        let tts_api_key = get("TTS_API_KEY").map(|k| k.trim().to_owned());
+        let tts_base_url = get("TTS_BASE_URL")
+            .unwrap_or_else(|| DEFAULT_TTS_BASE_URL.to_owned())
+            .trim_end_matches('/')
+            .to_owned();
+        let tts_model = get("TTS_MODEL").unwrap_or_else(|| DEFAULT_TTS_MODEL.to_owned());
+        let tts_voice = get("TTS_VOICE").unwrap_or_else(|| DEFAULT_TTS_VOICE.to_owned());
+
         Ok(Self {
             database_url,
             extractor_url,
@@ -202,6 +225,10 @@ impl Config {
             embedding_api_key,
             embedding_base_url,
             embedding_model,
+            tts_api_key,
+            tts_base_url,
+            tts_model,
+            tts_voice,
         })
     }
 }
@@ -246,6 +273,27 @@ mod tests {
         assert_eq!(cfg.embedding_api_key, None);
         assert_eq!(cfg.embedding_base_url, "https://api.openai.com");
         assert_eq!(cfg.embedding_model, "text-embedding-3-small");
+        assert_eq!(cfg.tts_api_key, None);
+        assert_eq!(cfg.tts_base_url, "https://api.openai.com");
+        assert_eq!(cfg.tts_model, "tts-1");
+        assert_eq!(cfg.tts_voice, "alloy");
+    }
+
+    #[test]
+    fn tts_settings_are_parsed() {
+        let cfg = Config::from_lookup(lookup(&[
+            ("DATABASE_URL", "postgres://x"),
+            ("TTS_API_KEY", " sk-tts "),
+            ("TTS_BASE_URL", "http://localhost:4321/"),
+            ("TTS_MODEL", "gpt-4o-mini-tts"),
+            ("TTS_VOICE", "nova"),
+        ]))
+        .unwrap();
+        assert_eq!(cfg.tts_api_key.as_deref(), Some("sk-tts"));
+        assert_eq!(cfg.tts_base_url, "http://localhost:4321");
+        assert_eq!(cfg.tts_model, "gpt-4o-mini-tts");
+        assert_eq!(cfg.tts_voice, "nova");
+        assert!(!format!("{cfg:?}").contains("sk-tts"));
     }
 
     #[test]

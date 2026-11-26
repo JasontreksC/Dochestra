@@ -2,15 +2,13 @@
 
 use std::path::PathBuf;
 
-use super::{MAX_IMAGE_BYTES, read_image, read_text, write_md};
+use super::{SelectedImages, read_text, select_images, write_md};
 use crate::clients::llm::{
-    LlmClient, LlmError, LlmRequest, MAX_REQUEST_BYTES, UserBlock, base64_len,
-    estimate_request_bytes,
+    LlmClient, LlmError, LlmRequest, MAX_REQUEST_BYTES, UserBlock, estimate_request_bytes,
 };
 use crate::executor::runner::{NodeContext, NodeError, NodeInputs, NodeOutputs};
 
-/// At most this many images are sent along with the document.
-pub const MAX_IMAGES: usize = 20;
+pub use super::MAX_IMAGES;
 
 const SYSTEM_PROMPT: &str = "\
 너는 문서 요약 전문가다. 주어진 문서(와 첨부 이미지)를 바탕으로 정확하고 읽기 쉬운 한국어 \
@@ -59,42 +57,11 @@ pub async fn run(
     if base > MAX_REQUEST_BYTES {
         return Err(NodeError::Failed(LlmError::RequestTooLarge.to_string()));
     }
-    let mut remaining = MAX_REQUEST_BYTES - base;
+    let remaining = MAX_REQUEST_BYTES - base;
 
-    // `images` is optional (D-4): absent or empty both mean "no images". Images are taken in
-    // order; one that is too large on its own is skipped, while the first one that no longer
-    // fits the request budget (or exceeds the count limit) ends the selection.
+    // `images` is optional (D-4): absent or empty both mean "no images".
     let image_paths: &[PathBuf] = inputs.get("images").map_or(&[], |a| a.paths.as_slice());
-    let mut images: Vec<Vec<u8>> = Vec::new();
-    let mut excluded = 0usize;
-    let mut budget_exhausted = false;
-    for path in image_paths {
-        if budget_exhausted || images.len() >= MAX_IMAGES {
-            excluded += 1;
-            continue;
-        }
-        let size = tokio::fs::metadata(path)
-            .await
-            .map_err(|e| {
-                NodeError::Failed(format!(
-                    "이미지를 읽을 수 없습니다 ({}): {e}",
-                    path.display()
-                ))
-            })?
-            .len();
-        if size > MAX_IMAGE_BYTES {
-            excluded += 1;
-            continue;
-        }
-        let cost = base64_len(usize::try_from(size).unwrap_or(usize::MAX));
-        if cost > remaining {
-            budget_exhausted = true;
-            excluded += 1;
-            continue;
-        }
-        remaining -= cost;
-        images.push(read_image(path).await?);
-    }
+    let SelectedImages { images, excluded } = select_images(image_paths, remaining).await?;
 
     let mut user_content: Vec<UserBlock> =
         images.iter().cloned().map(UserBlock::ImageJpeg).collect();

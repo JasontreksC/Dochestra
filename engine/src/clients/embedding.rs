@@ -2,10 +2,12 @@
 
 use std::time::Duration;
 
-use reqwest::StatusCode;
-use reqwest::header::RETRY_AFTER;
 use serde::Deserialize;
 use serde_json::{Value, json};
+
+use super::common::{
+    DEFAULT_BACKOFF_BASE, Failure, error_message, parse_retry_after, retry, scrub_secret,
+};
 
 /// Embedding dimension of `rag_chunks.embedding` (`vector(1536)`).
 pub const EMBEDDING_DIMENSIONS: usize = 1536;
@@ -14,11 +16,7 @@ pub const MAX_BATCH_ITEMS: usize = 96;
 /// Maximum total characters per request.
 pub const MAX_BATCH_CHARS: usize = 200_000;
 
-const MAX_RETRIES: u32 = 3;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
-const DEFAULT_BACKOFF_BASE: Duration = Duration::from_secs(1);
-const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
-const MESSAGE_PREVIEW_CHARS: usize = 300;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum EmbeddingError {
@@ -118,33 +116,21 @@ impl EmbeddingClient {
             "encoding_format": "float",
         });
 
-        let mut attempt = 0u32;
-        loop {
-            let (error, retryable, retry_after) = match self.send_once(&url, api_key, &body).await {
-                Ok(text) => return parse_embeddings(&text, batch.len()),
-                Err(failure) => failure,
-            };
-            if !retryable || attempt >= MAX_RETRIES {
-                return Err(redact(error, api_key));
-            }
-            let delay = retry_after.unwrap_or_else(|| self.backoff_base * 2u32.pow(attempt));
-            tracing::warn!(
-                attempt = attempt + 1,
-                delay_ms = delay.as_millis(),
-                "embedding request failed; retrying"
-            );
-            tokio::time::sleep(delay).await;
-            attempt += 1;
-        }
+        let text = retry("embedding", self.backoff_base, || {
+            self.send_once(&url, api_key, &body)
+        })
+        .await
+        .map_err(|error| redact(error, api_key))?;
+        parse_embeddings(&text, batch.len())
     }
 
-    /// One HTTP exchange; `Err` carries (error, retryable, retry-after).
+    /// One HTTP exchange; returns the raw response body of a successful call.
     async fn send_once(
         &self,
         url: &str,
         api_key: &str,
         body: &Value,
-    ) -> Result<String, (EmbeddingError, bool, Option<Duration>)> {
+    ) -> Result<String, Failure<EmbeddingError>> {
         let response = self
             .http
             .post(url)
@@ -153,26 +139,23 @@ impl EmbeddingClient {
             .json(body)
             .send()
             .await
-            .map_err(|err| {
-                let retryable = err.is_connect();
-                (EmbeddingError::Transport(err.to_string()), retryable, None)
-            })?;
+            .map_err(|err| Failure::transport(&err, EmbeddingError::Transport))?;
 
         let status = response.status();
         let retry_after = parse_retry_after(&response);
         let text = response
             .text()
             .await
-            .map_err(|err| (EmbeddingError::Transport(err.to_string()), false, None))?;
+            .map_err(|err| Failure::fatal(EmbeddingError::Transport(err.to_string())))?;
         if status.is_success() {
             return Ok(text);
         }
-        Err((
+        Err(Failure::http(
             EmbeddingError::Api {
                 status: status.as_u16(),
                 message: error_message(&text),
             },
-            is_retryable(status),
+            status,
             retry_after,
         ))
     }
@@ -240,36 +223,9 @@ fn parse_embeddings(body: &str, expected: usize) -> Result<Vec<Vec<f32>>, Embedd
     Ok(parsed.data.into_iter().map(|item| item.embedding).collect())
 }
 
-fn is_retryable(status: StatusCode) -> bool {
-    matches!(status.as_u16(), 429 | 500 | 502 | 503 | 529)
-}
-
-fn parse_retry_after(response: &reqwest::Response) -> Option<Duration> {
-    let seconds: f64 = response
-        .headers()
-        .get(RETRY_AFTER)?
-        .to_str()
-        .ok()?
-        .trim()
-        .parse()
-        .ok()?;
-    if !seconds.is_finite() || seconds < 0.0 {
-        return None;
-    }
-    Some(Duration::from_secs_f64(seconds).min(MAX_RETRY_AFTER))
-}
-
-/// `error.message` of an OpenAI error body, else the first 300 chars of the body.
-fn error_message(body: &str) -> String {
-    serde_json::from_str::<Value>(body)
-        .ok()
-        .and_then(|v| v["error"]["message"].as_str().map(str::to_owned))
-        .unwrap_or_else(|| body.chars().take(MESSAGE_PREVIEW_CHARS).collect())
-}
-
 /// Defense in depth: scrub the key from any message before it can reach logs or users.
 fn redact(error: EmbeddingError, api_key: &str) -> EmbeddingError {
-    let scrub = |s: String| s.replace(api_key, "***");
+    let scrub = |s: String| scrub_secret(s, api_key);
     match error {
         EmbeddingError::Api { status, message } => EmbeddingError::Api {
             status,

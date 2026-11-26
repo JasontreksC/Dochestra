@@ -33,7 +33,7 @@
 
 ## 2. 현재 활성 상태 요약
 
-- **현재 단계**: `M3 진행 / M5 진행` (2026-11-26) — T-308·T-115 Done. 트랙 R은 T-304(RAG), 트랙 I는 T-116 → T-502.
+- **현재 단계**: `M3 진행` (2026-11-26) — T-304 Done(커밋 acf22bf). 트랙 R은 T-306(slide), 웹은 T-406(노드 배치 UX + 비보안 컨텍스트 randomUUID 버그, 서브에이전트) 진행. fine 은 hcom 미접속.
 - **호스트 변경 기록**: 2026-11-26 w2-fine 이 Playwright chromium 실행을 위해 `sudo playwright install-deps chromium`(apt 시스템 패키지) 설치. 이후 sudo 를 쓰는 호스트 변경은 사전 승인 필요(CONTEXT §6.2).
 - **운영 메모**: 08:20경 오케스트레이터 hcom 세션이 pty 종료로 끊겨 T-202·T-113 보고가 유실됨 → 재연결 후 이벤트 로그에서 복구·검수.
 - **호스트 재부팅 (2026-11-26 10:08)**: 오케스트레이터·워커 세션 종료, /tmp 초기화. 작업 트리 무손상. 10:17 사용자 스택을 승인 이미지(engine T-308 검증 빌드, web 현 트리)로 재배포·smoke PASS. 워커 세션은 사용자가 재개(limo→kobe, pita→fine)했으나 hcom 신원 미복구 상태.
@@ -49,7 +49,8 @@
 ### In Progress (진행 중)
 | 티켓 ID | 마일스톤 | 상세 작업 목표 | 담당 워커 | 대상 경로 | 검증 명령어 (`verify_cmd`) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| T-304 | M3 | OpenAI 임베딩 클라이언트 + rag 노드(청킹·pgvector 저장·api JSON) + `POST /api/rag/{indexId}/query` | w1-kobe | `engine/src/{clients/embedding.rs,nodes/rag.rs,db/rag.rs,api/rag.rs,config.rs}`, `.env.example`, `engine/tests/rag.rs`, `.sqlx` | engine 표준 검증(mock OpenAI·Anthropic) |
+| T-306 | M3 | slide 노드: Claude 슬라이드 구성(JSON) → Rust PDF 렌더(16:9, 한글 폰트 내장, 입력 이미지 슬라이드) | w1-kobe | `engine/src/nodes/{mod,slide}.rs`, `engine/assets/fonts/**`, `engine/Dockerfile`, `engine/Cargo.{toml,lock}`, `engine/src/config.rs`, `engine/tests/slide.rs` | engine 표준 검증 + 생성 PDF 구조 검사 |
+| T-406 | M4(보수) | **[사용자 차단 버그]** 노드 배치 UX: 팔레트 드래그 앤 드롭 미구현·클릭 추가 노드가 선택/표시되지 않음·과확대 → DnD 추가, 추가 노드 자동 선택·뷰 이동, 겹침 없는 배치, fitView maxZoom 1 | orch 서브에이전트(fine 미접속) | `web/src/components/canvas/{NodePalette,Canvas}.tsx`, `web/src/store/editorStore.ts`, `web/src/lib/placement.ts`, `web/e2e/editor.spec.ts`, 테스트 | web 표준 검증 + `verify-stack.sh --ui` |
 
 ### Blocked (보류 / 설계 조정 또는 외부 확인 필요)
 | 티켓 ID | 마일스톤 | 작업 요약 | 블로커 사유 | 해소 방안 |
@@ -59,8 +60,6 @@
 ### Pending (대기 중)
 | 티켓 ID | 마일스톤 | 트랙 | 상세 작업 목표 | 선행 티켓 | 대상 경로 | 검증 조건 및 명령어 (`verify_cmd`) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| T-305 | M3 | R | voice 노드(OpenAI TTS → MP3) | T-303 | `engine/src/{clients/tts.rs,nodes/voice.rs}` | mock 서버 테스트 |
-| T-306 | M3 | R | slide 노드(LLM 슬라이드 구성 → PDF 렌더, CJK 폰트 내장) | T-303 | `engine/src/nodes/slide.rs`, 폰트 자산 | 생성 PDF 페이지 수·텍스트 검증 |
 | T-307 | M3 | R | fill 노드(AcroForm 필드 인식·채움, lopdf) | T-301 | `engine/src/nodes/fill.rs` | 폼 PDF 픽스처 테스트 |
 | T-502 | M5 | I | README(실행 방법·아키텍처·.env 설정·검증 스크립트 사용법) | T-116 | `README.md` | 수동 검토 |
 
@@ -94,6 +93,8 @@
 | T-115 | M1(보수) | verify-stack 실패 시 ps/logs/inspect 보존(최근 10개), 실패 주입 훅 | 오케스트레이터 재실행: 주입 rc=1 → db/engine/extractor/web 로그·state.json·ps 생성, 정상 rc=0 시 미저장, 잔존 0. apt 설치 이력 WORKLOG 기록 확인 | 2026-11-26 |
 | T-308 | M3 | LLM 요청 크기 상한 30MiB(전송 전 검사, summary 이미지 예산·제외 주석) | 오케스트레이터 재실행: cargo test 228 통과, prepare --check·docker build OK | 2026-11-26 |
 | T-116 | M1(보수) | compose engine 환경변수 패스스루 5키 + .env.example 보강 | 오케스트레이터: `compose config` 5키 확인, 사용자 스택 불변. verify-stack 은 w1 T-304 미완성 코드(.sqlx 미갱신)로 engine 빌드 실패 — 범위 밖(T-115 로그로 즉시 원인 확인) | 2026-11-26 |
+| T-304 | M3 | OpenAI 임베딩 클라이언트 + rag 노드(청킹·pgvector) + RAG 질의 API(검색+Claude 답변) | 오케스트레이터 재실행: cargo test 255(rag 12), prepare --check·docker build OK. 사용자 스택 engine 재배포·smoke PASS. 커밋 acf22bf | 2026-11-26 |
+| T-305 | M3 | 공용 재시도·키 마스킹 모듈(common.rs) + OpenAI TTS 클라이언트(4000자 분할·결합) + voice 노드(대본→MP3) | 오케스트레이터 재실행: cargo test 281(voice 11, 기존 llm/rag 무수정 통과), prepare --check·docker build OK. 사용자 스택 engine 재배포·smoke PASS | 2026-11-26 |
 
 ---
 
