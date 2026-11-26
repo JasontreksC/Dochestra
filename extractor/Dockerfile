@@ -26,9 +26,14 @@ ENV UV_LINK_MODE=copy \
 
 WORKDIR /app
 
+# uv's download/extract cache is ~6 GB for the CUDA wheels. It is mounted as tmpfs (RAM) for the
+# sync steps only, so it never lands in an image layer and never touches the build cache on disk
+# (a `type=cache` mount would keep the 6 GB on the host disk). UV_LINK_MODE=copy is required
+# because the cache (tmpfs) and the venv (overlay) are different filesystems.
 # 1) dependencies only (cached until pyproject.toml / uv.lock change)
 COPY pyproject.toml uv.lock .python-version ./
-RUN uv sync --frozen --no-dev --no-install-project
+RUN --mount=type=tmpfs,target=/root/.cache/uv,size=9g \
+    uv sync --frozen --no-dev --no-install-project
 
 # 2) Docling model weights (layout, tableformer, rapidocr) baked into the image so the
 #    container starts without network access. HF_HUB_OFFLINE only applies at runtime.
@@ -37,7 +42,8 @@ RUN HF_HUB_OFFLINE=0 docling-tools models download layout tableformer rapidocr \
 
 # 3) application code
 COPY app ./app
-RUN uv sync --frozen --no-dev
+RUN --mount=type=tmpfs,target=/root/.cache/uv,size=9g \
+    uv sync --frozen --no-dev
 
 # Non-root user. The uid/gid is fixed so the shared `data` volume can be written by
 # other services running with the same uid.
