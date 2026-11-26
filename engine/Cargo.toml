@@ -21,7 +21,9 @@ lopdf = { version = "0.47", default-features = false }
 mp3lame-encoder = "0.3.0"
 petgraph = "0.8.3"
 pgvector = { version = "0.4.2", features = ["sqlx"] }
-printpdf = { version = "0.13.0", default-features = false, features = ["jpeg"] }
+# `text_layout` is what makes printpdf embed only the glyphs a document uses (PdfSaveOptions::subset_fonts):
+# without it every slide deck carried both complete Korean fonts (~1.5 MB).
+printpdf = { version = "0.13.0", default-features = false, features = ["jpeg", "text_layout"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
@@ -36,6 +38,8 @@ ts-rs = { version = "12.0.1", features = ["uuid-impl", "chrono-impl", "serde-jso
 uuid = { version = "1.29.3", features = ["v4", "serde"] }
 
 [dev-dependencies]
+# `test-util`: a paused (virtual) clock, so tests of delays assert exact durations instead of wall-clock bounds.
+tokio = { version = "1.54.1", features = ["test-util"] }
 http-body-util = "0.1.5"
 image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 symphonia = { version = "0.6.1", default-features = false, features = ["mp3"] }

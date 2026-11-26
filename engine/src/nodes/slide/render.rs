@@ -25,7 +25,7 @@ const TITLE_RGB: (f32, f32, f32) = (229.0 / 255.0, 72.0 / 255.0, 77.0 / 255.0);
 const BODY_RGB: (f32, f32, f32) = (0.13, 0.13, 0.15);
 const MUTED_RGB: (f32, f32, f32) = (0.45, 0.45, 0.5);
 /// A picture is never enlarged beyond this factor (1 px = 1 pt at 1x): a 144 x 26 px chart blown
-/// up 4.7x to fill the closing slide was a pixelated smear (live check), so it stays smaller and centered.
+/// up 4.7x to cover the closing slide was a pixelated smear (live check), so it stays smaller and centered.
 const MAX_IMAGE_UPSCALE: f32 = 2.0;
 
 #[derive(Debug, thiserror::Error)]
@@ -62,11 +62,12 @@ impl Face {
 
     /// Advance width of one character in points at `size`.
     fn char_width(&self, c: char, size: f32) -> f32 {
-        let units = f32::from(self.font.units_per_em.max(1));
+        let units = f32::from(self.font.pdf_font_metrics.units_per_em.max(1));
         self.font
             .lookup_glyph_index(c as u32)
-            .and_then(|gid| self.font.get_glyph_width(gid))
-            .map_or(size * 0.5, |w| f32::from(w) * size / units)
+            .map_or(size * 0.5, |gid| {
+                f32::from(self.font.get_horizontal_advance(gid)) * size / units
+            })
     }
 
     fn text_width(&self, text: &str, size: f32) -> f32 {
@@ -186,7 +187,7 @@ impl Page {
                 y: Pt(y),
                 width: Pt(w),
                 height: Pt(h),
-                mode: Some(PaintMode::Fill),
+                mode: Some(PaintMode::default()), // solid paint
                 winding_order: None,
             },
         });

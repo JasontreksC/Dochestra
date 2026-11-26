@@ -179,6 +179,97 @@ fn deck_with_image_has_cover_slides_and_closing_image_page() {
     assert!(info.size < 10 * 1024 * 1024, "PDF is {} bytes", info.size);
 }
 
+/// Sizes of the `/FontFile2` streams (the embedded font programs) of a PDF.
+fn font_program_sizes(bytes: &[u8]) -> Vec<usize> {
+    let doc = lopdf::Document::load_mem(bytes).expect("readable PDF");
+    doc.objects
+        .values()
+        .filter_map(|object| match object {
+            lopdf::Object::Stream(stream) if stream.dict.has(b"FontFile2") => None,
+            lopdf::Object::Dictionary(d) => d.get(b"FontFile2").ok().and_then(|r| {
+                let id = r.as_reference().ok()?;
+                doc.get_object(id)
+                    .ok()?
+                    .as_stream()
+                    .ok()
+                    .map(|s| s.content.len())
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Live check finding (T-314): every deck was ~1.5 MB because both full NanumGothic files (2 MB each)
+/// were embedded; the fonts are now reduced to the glyphs the deck uses.
+#[test]
+fn fonts_are_embedded_as_subsets_and_the_pdf_stays_small() {
+    let typical = render::render_deck(&korean_deck(4), None, &font_dir()).unwrap();
+    let sizes = font_program_sizes(&typical);
+    assert!(sizes.len() >= 2, "Regular and Bold: {sizes:?}");
+    assert!(
+        sizes.iter().all(|&s| s < 150_000),
+        "font programs must be subsets (the full fonts are 2 MB): {sizes:?}"
+    );
+    assert!(
+        typical.len() < 300_000,
+        "a typical deck is {} bytes (was ~1.5 MB)",
+        typical.len()
+    );
+
+    // The largest deck the node can produce (15 slides x 7 bullets x 120 characters of Hangul).
+    let deck = SlideDeck {
+        title: "가".repeat(60),
+        subtitle: Some("나다라마바사".repeat(10)),
+        slides: (0..15)
+            .map(|i| SlideContent {
+                title: format!("{i} 제목 {}", "가나다라마바사아자차카타파하".repeat(3)),
+                bullets: (0..7)
+                    .map(|b| {
+                        format!(
+                            "{b} {}",
+                            "대한민국의경제성장과산업구조변화에대한분석결과를정리한내용".repeat(4)
+                        )
+                        .chars()
+                        .take(120)
+                        .collect()
+                    })
+                    .collect(),
+            })
+            .collect(),
+    };
+    let big = render::render_deck(&deck, None, &font_dir()).unwrap();
+    assert!(
+        big.len() < 300_000,
+        "a maximal Hangul deck is {} bytes",
+        big.len()
+    );
+}
+
+/// Subsetting renumbers glyphs, so the text must still map back to characters (ToUnicode) and
+/// every character the deck uses must still have its glyph.
+#[test]
+fn subset_fonts_keep_every_character_extractable() {
+    let deck = korean_deck(2);
+    let bytes = render::render_deck(&deck, None, &font_dir()).unwrap();
+    let doc = lopdf::Document::load_mem(&bytes).unwrap();
+    let text = doc.extract_text(&[1, 2, 3]).expect("text can be extracted");
+    let squeezed: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    for needle in [
+        "2026년연간매출보고서",
+        "영업본부",
+        "핵심지표와시사점",
+        "12.4%",
+        "3,420억원",
+        "Operatingmarginimprovedto18.2%",
+        "1/3",
+    ] {
+        assert!(
+            squeezed.contains(needle),
+            "missing {needle:?} in {squeezed:?}"
+        );
+    }
+}
+
 #[test]
 fn deck_without_image_has_no_closing_page() {
     let deck = korean_deck(3);
@@ -846,4 +937,19 @@ fn ordinary_pictures_keep_filling_their_boxes_with_the_ratio_intact() {
             );
         }
     }
+}
+
+/// Development helper (ignored): renders a deck outline from files, to compare PDFs across renderer
+/// changes. `SLIDE_DECK_JSON=slides.json [SLIDE_DECK_IMAGE=cover.jpg] SLIDE_DECK_OUT=out.pdf cargo test --test slide
+/// -- --ignored render_deck_from_files`.
+#[test]
+#[ignore = "development helper driven by environment variables"]
+fn render_deck_from_files() {
+    let json = std::fs::read_to_string(std::env::var("SLIDE_DECK_JSON").unwrap()).unwrap();
+    let deck: SlideDeck = serde_json::from_str(&json).unwrap();
+    let image = std::env::var("SLIDE_DECK_IMAGE")
+        .ok()
+        .map(|p| std::fs::read(p).unwrap());
+    let bytes = render::render_deck(&deck, image.as_deref(), &font_dir()).unwrap();
+    std::fs::write(std::env::var("SLIDE_DECK_OUT").unwrap(), bytes).unwrap();
 }

@@ -212,38 +212,39 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
-    #[tokio::test]
+    /// Runs on tokio's paused clock: sleeps complete instantly and `elapsed()` is the exact sum of
+    /// the delays that were slept, so nothing here depends on how loaded the machine is.
+    #[tokio::test(start_paused = true)]
     async fn backoff_doubles_and_retry_after_wins() {
-        // 10ms base: 10 + 20 + 40 ms between the four attempts.
-        let start = std::time::Instant::now();
-        let _: Result<(), &str> = retry("test", Duration::from_millis(10), || async {
-            Err(Failure {
-                error: "x",
-                retryable: true,
-                retry_after: None,
-            })
-        })
-        .await;
-        assert!(
-            start.elapsed() >= Duration::from_millis(70),
-            "{:?}",
-            start.elapsed()
-        );
+        use tokio::time::Instant;
 
-        // A server-supplied delay replaces the backoff entirely (0s here, base is 1s).
-        let start = std::time::Instant::now();
-        let _: Result<(), &str> = retry("test", Duration::from_secs(1), || async {
-            Err(Failure {
+        let failing = |retry_after: Option<Duration>| async move {
+            Err::<(), _>(Failure {
                 error: "x",
                 retryable: true,
-                retry_after: Some(Duration::ZERO),
+                retry_after,
             })
+        };
+
+        // 10ms base: 10 + 20 + 40 ms between the four attempts.
+        let start = Instant::now();
+        let _: Result<(), &str> = retry("test", Duration::from_millis(10), || failing(None)).await;
+        assert_eq!(start.elapsed(), Duration::from_millis(70));
+
+        // A server-supplied delay replaces the backoff entirely: zero here (the base is 1s) ...
+        let start = Instant::now();
+        let _: Result<(), &str> = retry("test", Duration::from_secs(1), || {
+            failing(Some(Duration::ZERO))
         })
         .await;
-        assert!(
-            start.elapsed() < Duration::from_millis(500),
-            "{:?}",
-            start.elapsed()
-        );
+        assert_eq!(start.elapsed(), Duration::ZERO);
+
+        // ... and a longer one is honored for each of the three retries, not capped by the backoff.
+        let start = Instant::now();
+        let _: Result<(), &str> = retry("test", Duration::from_millis(10), || {
+            failing(Some(Duration::from_secs(2)))
+        })
+        .await;
+        assert_eq!(start.elapsed(), Duration::from_secs(6));
     }
 }
