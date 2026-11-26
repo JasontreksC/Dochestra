@@ -4,6 +4,7 @@ import { formatDataType } from '@/lib/socketColors.ts'
 import { validateParams } from '@/lib/params.ts'
 import { useEditorStore } from '@/store/editorStore.ts'
 import BundlePicker from './BundlePicker.tsx'
+import RagChat from './RagChat.tsx'
 
 type ParamRecord = Record<string, unknown>
 const asRecord = (p: unknown): ParamRecord =>
@@ -103,7 +104,12 @@ function ParamEditor({
   }
 }
 
-export default function Inspector() {
+interface InspectorProps {
+  /** Run currently shown in the run panel (the RAG chat prefers its index). */
+  selectedRunId?: string | null
+}
+
+export default function Inspector({ selectedRunId = null }: InspectorProps = {}) {
   const node = useEditorStore((s) => s.nodes.find((n) => n.id === s.selectedNodeId))
   const spec = useEditorStore((s) => s.catalog.find((c) => c.kind === node?.data.kind))
   const setOutput = useEditorStore((s) => s.setOutput)
@@ -150,6 +156,10 @@ export default function Inspector() {
         />
         출력 노드로 지정
       </label>
+
+      {node.data.kind === 'rag' && (
+        <RagChat key={node.id} nodeId={node.id} selectedRunId={selectedRunId} />
+      )}
 
       <section>
         <h3 className="mb-2 text-xs font-semibold text-slate-500">파라미터</h3>

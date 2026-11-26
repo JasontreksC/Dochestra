@@ -264,3 +264,58 @@ test('insecure context: real http://<host IP> origin', async ({ page, baseURL })
   await addDropConnect(page)
   expect(errors).toEqual([])
 })
+
+const REPORT_PDF = path.resolve(import.meta.dirname, '../../fixtures/live/report_en.pdf')
+
+// Real, paid OpenRouter calls (embedding + LLM): opt in with E2E_LIVE=1.
+test('rag chat: ask the RAG node about the indexed report from the inspector', async ({ page }) => {
+  test.skip(process.env.E2E_LIVE !== '1', 'live OpenRouter test: set E2E_LIVE=1 to run')
+  await createWorkflow(page, `${RUN_TAG}-rag`)
+
+  const labels = ['PDF 번들', 'PDF 선택', '추출', 'RAG 챗봇']
+  for (const [i, label] of labels.entries()) {
+    await palette(page).getByRole('button', { name: label, exact: true }).click()
+    await expect(page.locator('.react-flow__node')).toHaveCount(i + 1)
+  }
+  await fitView(page)
+  const [bundleNode, pickNode, extractNode, ragNode] = labels.map((l) => node(page, l))
+
+  const edges = page.locator('.react-flow__edge')
+  await drag(page, handle(bundleNode!, 'files', 'source'), handle(pickNode!, 'files', 'target'))
+  await drag(page, handle(pickNode!, 'pdf', 'source'), handle(extractNode!, 'pdf', 'target'))
+  await drag(page, handle(extractNode!, 'md', 'source'), handle(ragNode!, 'md', 'target'))
+  await expect(edges).toHaveCount(3)
+
+  await bundleNode!.locator('span.font-semibold').click()
+  await page.getByLabel('PDF 파일 선택').setInputFiles({
+    name: `${RUN_TAG}-report.pdf`,
+    mimeType: 'application/pdf',
+    buffer: fs.readFileSync(REPORT_PDF),
+  })
+  await expect(page.getByRole('combobox', { name: '번들' })).toContainText(RUN_TAG)
+
+  await ragNode!.locator('span.font-semibold').click()
+  await page.getByRole('checkbox', { name: '출력 노드로 지정' }).check()
+  const chat = page.getByRole('region', { name: 'RAG 챗봇' })
+  await expect(chat.getByText('워크플로를 실행해 RAG 인덱스를 만든 뒤 질문할 수 있습니다')).toBeVisible()
+
+  await page.getByRole('button', { name: '실행' }).click()
+  await expect(page.locator('.react-flow__node [data-status="succeeded"]')).toHaveCount(4, {
+    timeout: 240_000,
+  })
+
+  await ragNode!.locator('span.font-semibold').click()
+  await expect(chat.getByText(/인덱스: 청크 \d+개 · 실행 [0-9a-f]{8}/)).toBeVisible()
+  await chat.getByRole('textbox', { name: '질문 입력' }).fill("What was Aurora Robotics' total revenue in 2025?")
+  await chat.getByRole('button', { name: '보내기' }).click()
+  await expect(chat.getByText('답변 생성 중…')).toBeVisible()
+  const answer = chat.getByTestId('rag-answer')
+  await expect(answer).toBeVisible({ timeout: 120_000 })
+  await expect(answer).toContainText('482')
+
+  const sourcesToggle = chat.getByRole('button', { name: /^근거 \d+개$/ })
+  await expect(sourcesToggle).toBeVisible()
+  await sourcesToggle.click()
+  expect(await chat.getByTestId('rag-source').count()).toBeGreaterThanOrEqual(1)
+  await page.screenshot({ path: 'node_modules/.tmp/playwright-results/rag-chat.png' })
+})

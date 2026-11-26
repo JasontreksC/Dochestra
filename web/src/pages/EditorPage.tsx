@@ -212,7 +212,7 @@ function WorkflowView({ workflowId }: { workflowId: string }) {
             <div className="min-w-0 flex-1">
               <Canvas />
             </div>
-            <Inspector />
+            <Inspector selectedRunId={activeRun?.id ?? null} />
           </ReactFlowProvider>
         )}
       </div>

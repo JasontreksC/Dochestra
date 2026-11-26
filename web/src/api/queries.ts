@@ -83,6 +83,13 @@ export function useDeleteWorkflow() {
 
 export const useValidateWorkflow = () => useMutation({ mutationFn: api.validateWorkflow })
 
+/** RAG question against an index (no cache to invalidate: answers are not cached). */
+export const useQueryRag = () =>
+  useMutation({
+    mutationFn: ({ indexId, ...req }: { indexId: string } & Parameters<typeof api.queryRag>[1]) =>
+      api.queryRag(indexId, req),
+  })
+
 export function useStartRun() {
   const qc = useQueryClient()
   return useMutation({
