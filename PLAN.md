@@ -33,7 +33,7 @@
 
 ## 2. 현재 활성 상태 요약
 
-- **현재 단계**: `M3 완료 → 품질 보강 / M5` (2026-11-26) — 외부 AI 7종 실 API 동작 확인(커밋 38e6449). fine: T-313(analyze 품질 보강) — T-312 완료, kobe: T-321/T-320 — T-317 완료.
+- **현재 단계**: `D-8 LIST 다중 입력` (2026-11-26 14:5x) — 노드 11종 품질 보강 완료·배포(커밋 b790f67). kobe: T-323(엔진), fine: T-409(캔버스).
 - **호스트 변경 기록**: 2026-11-26 w2-fine 이 Playwright chromium 실행을 위해 `sudo playwright install-deps chromium`(apt 시스템 패키지) 설치. 이후 sudo 를 쓰는 호스트 변경은 사전 승인 필요(CONTEXT §6.2).
 - **운영 메모**: 08:20경 오케스트레이터 hcom 세션이 pty 종료로 끊겨 T-202·T-113 보고가 유실됨 → 재연결 후 이벤트 로그에서 복구·검수.
 - **디스크 (14:4x)**: 여유 5.9GB → engine/target 30GB(오케스트레이터 worktree 검증 빌드가 경로별 산출물 누적) cargo clean 으로 35GB 확보. 규칙: worktree 검증 후 주기적으로 `cargo clean`, 빌드 전 df 확인.
@@ -53,6 +53,8 @@
 ### In Progress (진행 중)
 | 티켓 ID | 마일스톤 | 상세 작업 목표 | 담당 워커 | 대상 경로 | 검증 명령어 (`verify_cmd`) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
+| T-323 | M3 | **[사용자 요청 D-8]** LIST 입력 다중 엣지(엔진): validate_structure·planner·executor(엣지 순서 결합)·catalog(rag.md LIST[MD])·rag 다중 문서(doc_index/doc_title, 0005, RagSource·api JSON 확장)·바인딩 | w1-kobe | `engine/**`, `web/src/bindings/**` | engine 표준 검증 + 다중 MD rag 실 API 1회 |
+| T-409 | M4 | **[사용자 요청 D-8]** 캔버스 연결 규칙: LIST 입력은 다중 엣지·T/LIST[T] 허용(checkConnection), 소켓 표시(다중 허용 표식), RagChat 근거에 문서 제목 표시(T-323 바인딩 후) + e2e(두 extract → rag) | w2-fine | `web/src/lib/connection.ts`, `web/src/components/**`, 테스트, `web/e2e/**` | web 표준 검증 + verify-stack --ui |
 
 ### Blocked (보류 / 설계 조정 또는 외부 확인 필요)
 | 티켓 ID | 마일스톤 | 작업 요약 | 블로커 사유 | 해소 방안 |
@@ -63,8 +65,6 @@
 ### Pending (대기 중)
 | 티켓 ID | 마일스톤 | 트랙 | 상세 작업 목표 | 선행 티켓 | 대상 경로 | 검증 조건 및 명령어 (`verify_cmd`) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| T-323 | M3 | R | **[사용자 요청 D-8]** LIST 입력 다중 엣지(엔진): validate_structure·planner·executor(엣지 순서 결합)·catalog(rag.md LIST[MD])·rag 다중 문서(doc_index/doc_title, 0005, RagSource·api JSON 확장)·바인딩 | T-322 | `engine/**`, `web/src/bindings/**` | engine 표준 검증 + 다중 MD rag 실 API 1회 |
-| T-409 | M4 | I | **[사용자 요청 D-8]** 캔버스 연결 규칙: LIST 입력은 다중 엣지·T/LIST[T] 허용(checkConnection), 소켓 표시(다중 허용 표식), RagChat 근거에 문서 제목 표시(T-323 바인딩 후) + e2e(두 extract → rag) | T-313 | `web/src/lib/connection.ts`, `web/src/components/**`, 테스트, `web/e2e/**` | web 표준 검증 + verify-stack --ui |
 
 ### Done (검수 완료)
 | 티켓 ID | 마일스톤 | 완료된 작업 요약 | 실행한 검증 명령어 및 결과 | 완료 일자 |
