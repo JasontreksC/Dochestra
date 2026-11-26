@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, run_id, node_id, embedding_model FROM rag_indexes WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "run_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "node_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "embedding_model",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "becc137e20c50324120704b0cddf106393694fd295b65b3c9691f70e16fbd4db"
+}

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO rag_chunks (index_id, chunk_index, content, embedding) VALUES ($1, $2, $3, $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4",
+        "Text",
+        {
+          "Custom": {
+            "name": "vector",
+            "kind": "Simple"
+          }
+        }
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "06b168040cfcc95dca44e59afe88714a43155b54b9aee29b4fb0c22402bf1581"
+}

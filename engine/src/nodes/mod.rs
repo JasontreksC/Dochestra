@@ -5,6 +5,7 @@ pub mod bundle;
 pub mod extract;
 pub mod json_input;
 pub mod pick;
+pub mod rag;
 pub mod summary;
 pub mod translate;
 
@@ -15,6 +16,7 @@ use futures::FutureExt;
 use futures::future::BoxFuture;
 use sqlx::PgPool;
 
+use crate::clients::embedding::EmbeddingClient;
 use crate::clients::extractor::ExtractorClient;
 use crate::clients::llm::LlmClient;
 use crate::config::Config;
@@ -32,6 +34,7 @@ pub struct EngineRunner {
     pub http: reqwest::Client,
     pub extractor: ExtractorClient,
     pub llm: LlmClient,
+    pub embedder: EmbeddingClient,
 }
 
 impl EngineRunner {
@@ -48,12 +51,19 @@ impl EngineRunner {
             config.llm_model.clone(),
             config.llm_effort.clone(),
         );
+        let embedder = EmbeddingClient::new(
+            http.clone(),
+            config.embedding_base_url.clone(),
+            config.embedding_api_key.clone(),
+            config.embedding_model.clone(),
+        );
         Self {
             db,
             config,
             http,
             extractor,
             llm,
+            embedder,
         }
     }
 }
@@ -88,6 +98,11 @@ impl NodeRunner for EngineRunner {
             NodeKind::Summary => {
                 let llm = self.llm.clone();
                 async move { summary::run(&llm, &ctx, &inputs).await }.boxed()
+            }
+            NodeKind::Rag => {
+                let db = self.db.clone();
+                let embedder = self.embedder.clone();
+                async move { rag::run(&db, &embedder, &ctx, &inputs).await }.boxed()
             }
             NodeKind::JsonInput => async move { json_input::run(&ctx).await }.boxed(),
             _ => UnimplementedRunner.run(ctx, inputs),

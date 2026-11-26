@@ -5,6 +5,7 @@ pub mod bundles;
 pub mod extract;
 pub mod health;
 pub mod nodes;
+pub mod rag;
 pub mod runs;
 pub mod workflows;
 
@@ -52,6 +53,7 @@ pub fn router(state: AppState) -> Router {
             "/api/bundles/{id}/files/{file_id}",
             delete(bundles::delete_file),
         )
+        .route("/api/rag/{index_id}/query", post(rag::query))
         .route("/api/runs/{run_id}", get(runs::detail))
         .route("/api/runs/{run_id}/events", get(runs::events))
         .layer(TraceLayer::new_for_http())
