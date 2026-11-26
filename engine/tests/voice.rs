@@ -688,6 +688,54 @@ async fn voice_writes_a_script_then_the_mp3() {
     );
 }
 
+/// Live check finding: the narration is read aloud verbatim, so markup the model leaves in
+/// (headings, bullets, emphasis, emoji, URLs) must not reach the TTS or `script.txt`.
+#[tokio::test]
+async fn markup_left_in_the_script_is_removed_before_synthesis() {
+    let env = Env::new();
+    let reply = "## 개요\n**오로라 로보틱스**는 2025년에 성장했습니다 🎉\n- 매출은 4억 8천만 달러입니다.\n- 자세한 내용은 https://example.com 을 보세요.\n\n\n마무리합니다.";
+    let (llm, tts) = spawn_providers(vec![llm_reply(reply)], vec![]).await;
+    voice::run(
+        &llm_client(&llm.url, Some(KEY)),
+        &tts_client(&tts.url, Some(KEY)),
+        &env.ctx,
+        &env.inputs(0),
+    )
+    .await
+    .unwrap();
+
+    let cleaned = "개요\n오로라 로보틱스는 2025년에 성장했습니다\n매출은 4억 8천만 달러입니다.\n자세한 내용은 을 보세요.\n\n마무리합니다.";
+    assert_eq!(tts.tts_inputs(), [cleaned]);
+    assert_eq!(
+        std::fs::read_to_string(env.dir.join("_work/script.txt")).unwrap(),
+        cleaned
+    );
+}
+
+/// Live check finding: the same company appeared as both "오로라 로보틱스" and "Aurora Robotics"
+/// in one script; the prompt now asks for Hangul readings with one spelling per entity.
+#[tokio::test]
+async fn the_prompt_asks_for_hangul_names_with_one_spelling() {
+    let env = Env::new();
+    let (llm, tts) = spawn_providers(vec![], vec![]).await;
+    voice::run(
+        &llm_client(&llm.url, Some(KEY)),
+        &tts_client(&tts.url, Some(KEY)),
+        &env.ctx,
+        &env.inputs(0),
+    )
+    .await
+    .unwrap();
+    let system = llm.body(0)["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        system.contains("한글로 적고") && system.contains("한 가지 표기"),
+        "{system}"
+    );
+}
+
 #[tokio::test]
 async fn voice_without_images_and_with_many_images() {
     let env = Env::new();
